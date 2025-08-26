@@ -7,9 +7,12 @@ from datetime import date, timedelta, datetime
 import requests
 import json
 import time
+import pytz
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY')
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
@@ -20,16 +23,20 @@ KIS_APP_SECRET = os.environ.get('KIS_APP_SECRET')
 
 S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
 
-ssm = boto3.client('ssm')
-PARAMETER_NAME = '/my-app/dev/kis-token' # 파라미터 이름
+ssm_client = boto3.client('ssm')
+KIS_TOKEN_PARAMETER_NAME = os.environ.get('KIS_TOKEN_PARAMETER_NAME')
+
+MARKET_STATUS_PARAMETER_NAME = os.environ.get('MARKET_STATUS_PARAMETER_NAME')
+MARKET_TIMEZONE = 'US/Eastern' # Nasdaq/NYSE 시장 기준 시간대
+
 
 def get_token_from_parameter_store():
     """Parameter Store에서 토큰 객체를 가져오는 함수"""
     try:
-        response = ssm.get_parameter(Name=PARAMETER_NAME, WithDecryption=True)
+        response = ssm_client.get_parameter(Name=KIS_TOKEN_PARAMETER_NAME, WithDecryption=True)
         # 저장된 값은 JSON 문자열이므로 파싱
         return json.loads(response['Parameter']['Value'])
-    except ssm.exceptions.ParameterNotFound:
+    except ssm_client.exceptions.ParameterNotFound:
         logger.info("Token not found in Parameter Store.")
         return None
     except Exception as e:
@@ -39,8 +46,8 @@ def get_token_from_parameter_store():
 def save_token_to_parameter_store(token_info):
     """새 토큰 객체를 Parameter Store에 저장하는 함수"""
     try:
-        ssm.put_parameter(
-            Name=PARAMETER_NAME,
+        ssm_client.put_parameter(
+            Name=KIS_TOKEN_PARAMETER_NAME,
             Value=json.dumps(token_info), # 딕셔너리를 JSON 문자열로 변환
             Type='SecureString', # 암호화하여 저장
             Overwrite=True
@@ -131,10 +138,83 @@ def get_overseas_stock_price(token, key, secret, base_url, symbol, exchange_code
     except json.JSONDecodeError as e:
         logger.error("Failed to parse JSON for symbol %s. Response text: %s", symbol, response.text)
         return None
-    
+
+def check_and_update_market_status():
+    """Polygon API를 호출하여 현재 시장 상태를 확인하고 Parameter Store를 업데이트합니다."""
+    try:
+        logger.info("Checking market status...")
+        
+        # Polygon API 호출
+        url = f"https://api.polygon.io/v1/marketstatus/now?apiKey={POLYGON_API_KEY}"
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        data = response.json()
+        # 'nasdaq' 키가 없을 경우를 대비하여 안전하게 접근
+        nasdaq_status = data.get('exchanges', {}).get('nasdaq', 'unknown').lower()
+        
+        # 상태를 'OPEN' 또는 'CLOSED'로 결정
+        market_status_to_update = 'OPEN' if nasdaq_status == 'open' else 'CLOSED'
+        
+        # 결정된 상태를 Parameter Store에 업데이트 ('팻말' 바꾸기)
+        ssm_client.put_parameter(
+            Name=MARKET_STATUS_PARAMETER_NAME,
+            Value=market_status_to_update,
+            Type='String',
+            Overwrite=True
+        )
+        logger.info(f"Market status successfully updated to: {market_status_to_update}")
+
+    except Exception as e:
+        logger.exception(f"An error occurred during market status check: {e}")
+        # 오류 발생 시, 안전을 위해 시장 상태를 'CLOSED'로 강제 업데이트
+        logger.warning("Setting market status to CLOSED due to an error.")
+        ssm_client.put_parameter(
+            Name=MARKET_STATUS_PARAMETER_NAME,
+            Value='CLOSED',
+            Type='String',
+            Overwrite=True
+        )
+
+def fetch_stock_data_if_market_open():
+    """Parameter Store의 시장 상태를 확인하고, 열려있을 경우에만 주가 수집 로직을 실행합니다."""
+    try:
+        # 현재 '팻말' 상태를 Parameter Store에서 읽어오기
+        status_param = ssm_client.get_parameter(Name=MARKET_STATUS_PARAMETER_NAME)
+        current_market_status = status_param['Parameter']['Value']
+        
+        if current_market_status == 'OPEN':
+            return True
+        else:
+            return False
+        
+    except Exception as e:
+        logger.exception(f"An error occurred during stock price collection logic: {e}")
+
+
+def save_data_in_s3(current_date, s3_payload):
+    s3_client = boto3.client('s3')
+    s3_client.put_object(
+        Bucket=S3_BUCKET_NAME,
+        Key=f"{current_date}.json",
+        Body=str(s3_payload)
+    )
+
 def lambda_handler(event, context):
     logger.info("Lambda handler started.")
     
+    # 미국 동부 시간 기준 현재 시간이 30분 간격일 때만 시장 상태를 체크
+    market_time = datetime.now(pytz.timezone(MARKET_TIMEZONE))
+    if market_time.minute % 30 == 0:
+        check_and_update_market_status()
+    
+    if not fetch_stock_data_if_market_open(): # 정규장이 열려있지 않으면 함수 즉시 종료
+        logger.info("Market is CLOSED. Skipping stock price collection and close function.")
+        return
+    
+    logger.info("Market is OPEN. Fetching stock prices...")
+    
+    current_date = datetime.now().isoformat()
     access_token = get_access_token(KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL)
     if not access_token:
         logger.error("Access token is not available. Aborting.")
@@ -152,7 +232,6 @@ def lambda_handler(event, context):
     
     s3_payload = []
     processed_count = 0
-    current_date = datetime.now().isoformat()
     
     for ticker_code, ticker_id, exchange_code in tickers:
 
@@ -176,12 +255,7 @@ def lambda_handler(event, context):
 
     logger.info("Successfully processed %d out of %d tickers.", processed_count, len(tickers))
     
-    s3_client = boto3.client('s3')
-    s3_client.put_object(
-        Bucket=S3_BUCKET_NAME,
-        Key=f"{current_date}.json",
-        Body=str(s3_payload)
-    )
+    save_data_in_s3(current_date, s3_payload)
 
     logger.info("Lambda handler finished.")
     return {

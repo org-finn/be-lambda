@@ -5,6 +5,7 @@ import boto3
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from polygon import RESTClient
+import pytz
 
 # --- 로거, 환경 변수, 클라이언트 초기화 ---
 logger = logging.getLogger()
@@ -14,6 +15,8 @@ POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY')
 SQS_QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+
+MARKET_TIMEZONE = 'US/Eastern' # Nasdaq/NYSE 시장 기준 시간대
 
 # 클라이언트는 핸들러 함수 밖에 선언하여 재사용 (성능 최적화)
 sqs_client = boto3.client('sqs')
@@ -74,8 +77,8 @@ def lambda_handler(event, context):
         # 0. 핸들러 시작 시 시장 상태를 한 번만 확인
         is_market_open = get_market_status()
         
-        # 1. n분 전 시간 계산 (UTC 기준)
-        time_n_minutes_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        # 1. n분 전 시간 계산 (EST 기준)
+        time_n_minutes_ago = (datetime.now(pytz.timezone(MARKET_TIMEZONE)) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
         
         # ⭐ 티커별로 기사를 저장할 딕셔너리 및 중복 방지용 set
         articles_by_ticker = {}
@@ -86,11 +89,19 @@ def lambda_handler(event, context):
         general_articles = fetch_articles(published_utc_gte=time_n_minutes_ago, limit=20)
         for article in general_articles:
             if article.id not in seen_article_ids:
+                sentiment = None
+                reasoning = None
+                if hasattr(article, 'insights') and article.insights:
+                    first_insight = article.insights[0]
+                    sentiment = first_insight.get('sentiment')
+                    reasoning = first_insight.get('sentiment_reasoning')
+                            
                 payload = {
                     'published_date': article.published_utc, 'title': article.title,
                     'description': article.description, 'article_url': article.article_url,
                     'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
-                    'distinct_id': article.id
+                    'distinct_id': article.id, 'sentiment': sentiment,
+                    'reasoning': reasoning
                 }
                 # 티커가 없는 뉴스는 'GENERAL' 키로 그룹화
                 if 'GENERAL' not in articles_by_ticker:
@@ -107,11 +118,19 @@ def lambda_handler(event, context):
                 
                 for article in ticker_articles:
                     if article.id not in seen_article_ids:
+                        sentiment = None
+                        reasoning = None
+                        if hasattr(article, 'insights') and article.insights:
+                            first_insight = article.insights[0]
+                            sentiment = first_insight.get('sentiment')
+                            reasoning = first_insight.get('sentiment_reasoning')
+                            
                         payload = {
                             'published_date': article.published_utc, 'title': article.title,
                             'description': article.description, 'article_url': article.article_url,
                             'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
-                            'distinct_id': article.id
+                            'distinct_id': article.id, 'sentiment': sentiment,
+                            'reasoning': reasoning    
                         }
                         # 해당 티커 코드로 그룹화
                         if ticker_code not in articles_by_ticker:
@@ -132,7 +151,7 @@ def lambda_handler(event, context):
                 'ticker_code': ticker,
                 'articles': articles,
                 'is_market_open': is_market_open,
-                'created_at': datetime.now().isoformat()
+                'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
             }
             entries_to_send.append({
                 'Id': ticker,

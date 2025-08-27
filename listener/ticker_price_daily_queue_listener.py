@@ -5,6 +5,7 @@ import boto3
 import psycopg2
 from psycopg2.extras import execute_batch
 from datetime import datetime
+import pytz
 
 # --- 로거, 환경 변수, 클라이언트 초기화 ---
 logger = logging.getLogger()
@@ -15,6 +16,8 @@ DB_NAME = os.environ.get('DB_NAME')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_PORT = os.environ.get('DB_PORT')
 DB_USER = os.environ.get('DB_USER')
+
+MARKET_TIMEZONE = 'US/Eastern' # Nasdaq/NYSE 시장 기준 시간대
 
 db_connection = None
 db_credentials = None
@@ -96,7 +99,7 @@ def lambda_handler(event, context):
         previous_closes = get_latest_close_prices(cur)
 
         data_to_insert = []
-        insert_time = datetime.now()
+        insert_time = datetime.now(pytz.timezone(MARKET_TIMEZONE))
 
         # 3. 각 메시지에 대해 등락률 계산 및 데이터 가공
         for data in ticker_data_from_sqs:

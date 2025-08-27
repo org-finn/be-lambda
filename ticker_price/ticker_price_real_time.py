@@ -197,8 +197,7 @@ def save_data_in_s3(current_date, s3_payload):
     """S3에 데이터를 저장하는 함수. 실패 시 예외를 발생시킵니다."""
     try:
         s3_client = boto3.client('s3')
-        # S3 키는 파일 경로처럼 구성할 수 있습니다 (예: 'year=YYYY/month=MM/day=DD/data.json')
-        s3_key = f"{datetime.fromisoformat(current_date).strftime('%Y/%m/%d')}/stock_prices.json"
+        s3_key = f"{datetime.now(pytz.timezone(MARKET_TIMEZONE)).strftime('%Y/%m/%d/%H/%M/00')}/stock_prices.json"
         
         s3_client.put_object(
             Bucket=S3_BUCKET_NAME,
@@ -226,7 +225,7 @@ def lambda_handler(event, context):
         
         logger.info("Market is OPEN. Fetching stock prices...")
         
-        current_date = datetime.now().isoformat()
+        current_date = datetime.now(pytz.timezone(MARKET_TIMEZONE)).isoformat()
         access_token = get_access_token(KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL)
         if not access_token:
             raise Exception("Failed to get a valid access token. Aborting.")

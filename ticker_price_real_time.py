@@ -194,72 +194,89 @@ def fetch_stock_data_if_market_open():
 
 
 def save_data_in_s3(current_date, s3_payload):
-    s3_client = boto3.client('s3')
-    s3_client.put_object(
-        Bucket=S3_BUCKET_NAME,
-        Key=f"{current_date}.json",
-        Body=str(s3_payload)
-    )
+    """S3에 데이터를 저장하는 함수. 실패 시 예외를 발생시킵니다."""
+    try:
+        s3_client = boto3.client('s3')
+        # S3 키는 파일 경로처럼 구성할 수 있습니다 (예: 'year=YYYY/month=MM/day=DD/data.json')
+        s3_key = f"{datetime.fromisoformat(current_date).strftime('%Y/%m/%d')}/stock_prices.json"
+        
+        s3_client.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=s3_key,
+            Body=json.dumps(s3_payload, indent=2),
+            ContentType='application/json'
+        )
+        logger.info("Successfully saved data to S3 bucket %s at key %s", S3_BUCKET_NAME, s3_key)
+    except Exception as e:
+        logger.exception("Failed to save data to S3.")
+        # S3 저장 실패는 치명적이므로, 예외를 다시 발생시켜 재시도를 유도합니다.
+        raise e
 
 def lambda_handler(event, context):
     logger.info("Lambda handler started.")
-    
-    # 미국 동부 시간 기준 현재 시간이 30분 간격일 때만 시장 상태를 체크
-    market_time = datetime.now(pytz.timezone(MARKET_TIMEZONE))
-    if market_time.minute % 30 == 0:
-        check_and_update_market_status()
-    
-    if not fetch_stock_data_if_market_open(): # 정규장이 열려있지 않으면 함수 즉시 종료
-        logger.info("Market is CLOSED. Skipping stock price collection and close function.")
-        return
-    
-    logger.info("Market is OPEN. Fetching stock prices...")
-    
-    current_date = datetime.now().isoformat()
-    access_token = get_access_token(KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL)
-    if not access_token:
-        logger.error("Access token is not available. Aborting.")
-        return
-    logger.debug("Using access token starting with: %s", access_token[:15]) # 토큰 전체를 로그에 남기지 않도록 일부만 기록
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    
-    response = supabase.table('ticker').select('code, id, exchange_code').execute()
-    if response.data:
+    try:    
+        # 미국 동부 시간 기준 현재 시간이 30분 간격일 때만 시장 상태를 체크
+        market_time = datetime.now(pytz.timezone(MARKET_TIMEZONE))
+        if market_time.minute % 30 == 0:
+            check_and_update_market_status()
+        
+        if not fetch_stock_data_if_market_open(): # 정규장이 열려있지 않으면 함수 즉시 종료
+            logger.info("Market is CLOSED. Skipping stock price collection and close function.")
+            return {'statusCode': 200, 'body': 'Market is closed.'}
+        
+        logger.info("Market is OPEN. Fetching stock prices...")
+        
+        current_date = datetime.now().isoformat()
+        access_token = get_access_token(KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL)
+        if not access_token:
+            raise Exception("Failed to get a valid access token. Aborting.")
+        
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        response = supabase.table('ticker').select('code, id, exchange_code').execute()
+        
+        if not response.data:
+            raise Exception("No ticker data found from Supabase. Aborting.")
+            
         tickers = [(item['code'], item['id'], item['exchange_code']) for item in response.data]
         logger.info("Successfully fetched %d tickers to process.", len(tickers))
-    else:
-        logger.warning("No ticker data to fetch.")
-        return
-    
-    s3_payload = []
-    processed_count = 0
-    
-    for ticker_code, ticker_id, exchange_code in tickers:
-
-        # NYSE -> NYS, NASD -> NAS
-        price_data = get_overseas_stock_price(access_token, KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, ticker_code, exchange_code[:-1])
         
-        if price_data and price_data.get('output1'):
-            output = price_data['output1']
-            current_price = output.get('last')
-            logger.info("Processed %s: Current price is $%s", ticker_code, current_price)
+        s3_payload = []
+        processed_count = 0
+        
+        for ticker_code, ticker_id, exchange_code in tickers:
+
+            # NYSE -> NYS, NASD -> NAS
+            price_data = get_overseas_stock_price(access_token, KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, ticker_code, exchange_code[:-1])
             
-            s3_payload.append({
-                "tickerId" : ticker_id,
-                "tickerCode" : ticker_code,
-                "price" : current_price,
-                "priceDate" : current_date
-            })
-            processed_count += 1
-        else:
-            logger.warning("Could not retrieve price data for %s.", ticker_code)
+            if price_data and price_data.get('output1'):
+                output = price_data['output1']
+                current_price = output.get('last')
+                logger.info("Processed %s: Current price is $%s", ticker_code, current_price)
+                
+                s3_payload.append({
+                    "tickerId" : ticker_id,
+                    "tickerCode" : ticker_code,
+                    "price" : current_price,
+                    "priceDate" : current_date
+                })
+                processed_count += 1
+            else:
+                logger.warning("Could not retrieve price data for %s.", ticker_code)
 
-    logger.info("Successfully processed %d out of %d tickers.", processed_count, len(tickers))
-    
-    save_data_in_s3(current_date, s3_payload)
+        # 🚨 처리된 데이터가 하나도 없을 경우
+        if processed_count == 0 and len(tickers) > 0:
+            raise Exception(f"Processed 0 tickers out of {len(tickers)}. Retrying might solve the issue.")
+        
+        logger.info("Successfully processed %d out of %d tickers.", processed_count, len(tickers))
+        save_data_in_s3(current_date, s3_payload)
 
-    logger.info("Lambda handler finished.")
-    return {
-        'statusCode': 200,
-        'body': f'Successfully processed {processed_count} tickers.'
-    }
+        logger.info("Lambda handler finished.")
+        return {
+            'statusCode': 200,
+            'body': f'Successfully processed {processed_count} tickers.'
+        }
+    except Exception as e:
+            # 핸들러의 메인 로직에서 발생하는 모든 예외를 여기서 잡아 로깅합니다.
+            logger.exception("A critical error occurred in the lambda handler.")
+            # 🚨 예외를 다시 발생시켜 Lambda 실행을 '실패'로 AWS에 알립니다.
+            raise e

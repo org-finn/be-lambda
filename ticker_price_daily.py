@@ -35,9 +35,15 @@ def get_tickers_from_supabase():
             tickers = [(item['id'], item['code']) for item in response.data]
             logger.info("Found %d tickers to process.", len(tickers))
             return tickers
+        else:
+            # 데이터가 없는 것은 재시도할 필요가 없는 정상 상황일 수 있음
+            logger.warning("No tickers found from Supabase.")
+            return []
     except Exception as e:
-        logger.exception("Failed to fetch tickers from Supabase: %s", e)
-    return []
+        # DB 연결 실패 등은 재시도가 필요한 오류이므로 예외 발생
+        logger.exception("Failed to fetch tickers from Supabase.")
+        raise e
+
 
 def fetch_previous_day_data(ticker_code):
     """Polygon API를 호출하여 특정 티커의 전날 데이터를 가져옵니다."""
@@ -83,48 +89,56 @@ def process_ticker(ticker_info):
 
 def lambda_handler(event, context):
     logger.info("Lambda handler started: Fetching stock prices to send to SQS.")
-    
-    # 1. 처리할 티커 목록 조회
-    tickers = get_tickers_from_supabase()
-    if not tickers:
-        return {'statusCode': 200, 'body': 'No tickers to process.'}
-        
-    messages_to_send = []
-
-    # 2. 순차 처리를 통해 각 티커의 데이터를 API로 가져오기
-    logger.info("Starting sequential processing for %d tickers...", len(tickers))
-    for ticker in tickers:
-        result = process_ticker(ticker)
-        if result:
-            messages_to_send.append(result)
-
-    # 3. 수집된 데이터를 SQS 큐로 전송
-    if messages_to_send:
-        logger.info("Sending %d messages to SQS queue...", len(messages_to_send))
-        
-        # SQS는 최대 10개씩 메시지를 묶어 보낼 수 있음 (Batch 전송)
-        for i in range(0, len(messages_to_send), 10):
-            batch = messages_to_send[i:i+10]
-            entries = [
-                # Id는 배치 내에서 유니크해야 하므로 ticker_code 사용
-                {'Id': msg['ticker_code'], 'MessageBody': json.dumps(msg)} 
-                for msg in batch
-            ]
+    try:
+        # 1. 처리할 티커 목록 조회
+        tickers = get_tickers_from_supabase()
+        if not tickers:
+            return {'statusCode': 200, 'body': 'No tickers to process.'}
             
-            try:
-                sqs_client.send_message_batch(
-                    QueueUrl=SQS_QUEUE_URL,
-                    Entries=entries
-                )
-            except Exception as e:
-                logger.exception("Failed to send batch to SQS: %s", e)
-                return {'statusCode': 500, 'body': "Failed to send batch to SQS"}
+        messages_to_send = []
+
+        # 2. 순차 처리를 통해 각 티커의 데이터를 API로 가져오기
+        logger.info("Starting sequential processing for %d tickers...", len(tickers))
+        for ticker in tickers:
+            result = process_ticker(ticker)
+            if result:
+                messages_to_send.append(result)
+
+        # 3. 수집된 데이터를 SQS 큐로 전송
+        if messages_to_send:
+            logger.info("Sending %d messages to SQS queue...", len(messages_to_send))
+            
+            # SQS는 최대 10개씩 메시지를 묶어 보낼 수 있음 (Batch 전송)
+            for i in range(0, len(messages_to_send), 10):
+                batch = messages_to_send[i:i+10]
+                entries = [
+                    # Id는 배치 내에서 유니크해야 하므로 ticker_code 사용
+                    {'Id': msg['ticker_code'], 'MessageBody': json.dumps(msg)} 
+                    for msg in batch
+                ]
+                
+                try:
+                    sqs_client.send_message_batch(
+                        QueueUrl=SQS_QUEUE_URL,
+                        Entries=entries
+                    )
+                except Exception as e:
+                    logger.exception("Failed to send batch to SQS: %s", e)
+                    return {'statusCode': 500, 'body': "Failed to send batch to SQS"}
+            
+            logger.info("✅ Successfully sent all message batches to SQS.")
         
-        logger.info("✅ Successfully sent all message batches to SQS.")
+        processed_count = len(messages_to_send)
+        if processed_count == 0 and len(tickers) > 0:
+            raise Exception(f"Processed 0 tickers out of {len(tickers)}. All API calls might have failed.")
+            
+        logger.info("Lambda handler finished successfully.")
+        return {
+            'statusCode': 200,
+            'body': f'Successfully processed and sent {processed_count} tickers to SQS.'
+        }
     
-    processed_count = len(messages_to_send)
-    logger.info("Lambda handler finished. Processed %d tickers.", processed_count)
-    return {
-        'statusCode': 200,
-        'body': f'Successfully processed and sent {processed_count} tickers to SQS.'
-    }
+    except Exception as e:
+        logger.exception("A critical error occurred in the lambda handler.")
+        # 🚨 예외를 다시 발생시켜 Lambda 실행을 '실패'로 AWS에 알립니다.
+        raise e

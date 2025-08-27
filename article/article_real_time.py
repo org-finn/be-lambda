@@ -93,8 +93,8 @@ def lambda_handler(event, context):
                 reasoning = None
                 if hasattr(article, 'insights') and article.insights:
                     first_insight = article.insights[0]
-                    sentiment = first_insight.get('sentiment')
-                    reasoning = first_insight.get('sentiment_reasoning')
+                    sentiment = first_insight.sentiment
+                    reasoning = first_insight.sentiment_reasoning
                             
                 payload = {
                     'published_date': article.published_utc, 'title': article.title,

@@ -14,6 +14,7 @@ logger.setLevel(logging.INFO)
 
 POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY')
 
+# 티커 조회 용도로 사용
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 

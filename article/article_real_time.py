@@ -67,7 +67,7 @@ def fetch_articles(published_utc_gte, ticker_code=None, limit=10):
     return []
 
 def lambda_handler(event, context):
-    """티커별 뉴스 및 전체 최신 뉴스를 수집하여 중복 제거 후 SQS 큐로 전송합니다."""
+    """티커별로 뉴스를 그룹화하여 SQS 큐로 전송합니다."""
     logger.info("Article collection Lambda handler started.")
     
     try:
@@ -77,55 +77,74 @@ def lambda_handler(event, context):
         # 1. n분 전 시간 계산 (UTC 기준)
         time_n_minutes_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
         
-        all_articles = {} # 중복 제거를 위해 딕셔너리 사용 {article_id: payload}
+        # ⭐ 티커별로 기사를 저장할 딕셔너리 및 중복 방지용 set
+        articles_by_ticker = {}
+        seen_article_ids = set()
 
         # 2. 전체 최신 뉴스 수집 (limit 20)
-        logger.info("Fetching general articles from the last 15 minutes...")
+        logger.info("Fetching general articles...")
         general_articles = fetch_articles(published_utc_gte=time_n_minutes_ago, limit=20)
         for article in general_articles:
-            payload = {
-                'published_date': article.published_utc, 'title': article.title,
-                'description': article.description, 'article_url': article.article_url,
-                'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
-                'distinct_id': article.id, 'created_at': datetime.now().isoformat(),
-                'is_market_open': is_market_open
-            }
-            all_articles[article.id] = payload
+            if article.id not in seen_article_ids:
+                payload = {
+                    'published_date': article.published_utc, 'title': article.title,
+                    'description': article.description, 'article_url': article.article_url,
+                    'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
+                    'distinct_id': article.id
+                }
+                # 티커가 없는 뉴스는 'GENERAL' 키로 그룹화
+                if 'GENERAL' not in articles_by_ticker:
+                    articles_by_ticker['GENERAL'] = []
+                articles_by_ticker['GENERAL'].append(payload)
+                seen_article_ids.add(article.id)
 
         # 3. 티커별 최신 뉴스 수집 (limit 10)
         tickers = get_tickers_from_supabase()
         if tickers:
             for ticker_id, ticker_code, short_company_name in tickers:
-                logger.info("Fetching articles for %s from the last 15 minutes...", ticker_code)
+                logger.info("Fetching articles for %s...", ticker_code)
                 ticker_articles = fetch_articles(published_utc_gte=time_n_minutes_ago, ticker_code=ticker_code, limit=10)
                 
                 for article in ticker_articles:
-                    # 딕셔너리에 추가하면서 자연스럽게 중복 제거
-                    if article.id not in all_articles:
+                    if article.id not in seen_article_ids:
                         payload = {
                             'published_date': article.published_utc, 'title': article.title,
                             'description': article.description, 'article_url': article.article_url,
                             'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
-                            'distinct_id': article.id, 'ticker_id': ticker_id, 'ticker_code': ticker_code,
-                            'short_company_name': short_company_name, 'created_at': datetime.now().isoformat(),
-                            'is_market_open': is_market_open
+                            'distinct_id': article.id
                         }
-                        all_articles[article.id] = payload
+                        # 해당 티커 코드로 그룹화
+                        if ticker_code not in articles_by_ticker:
+                            articles_by_ticker[ticker_code] = []
+                        articles_by_ticker[ticker_code].append(payload)
+                        seen_article_ids.add(article.id)
 
-        # 4. 수집된 뉴스를 SQS 큐로 전송
-        final_article_list = list(all_articles.values())
-        if not final_article_list:
+        # 4. 수집된 뉴스를 티커 단위로 SQS 큐로 전송
+        if not articles_by_ticker:
             logger.info("No new articles found.")
             return {'statusCode': 200, 'body': 'No new articles found.'}
 
-        logger.info("Sending %d unique articles to SQS queue...", len(final_article_list))
+        logger.info("Sending news for %d tickers/groups to SQS queue...", len(articles_by_ticker))
         
-        for i in range(0, len(final_article_list), 10):
-            batch = final_article_list[i:i+10]
-            entries = [{'Id': msg['distinct_id'], 'MessageBody': json.dumps(msg)} for msg in batch]
-            sqs_client.send_message_batch(QueueUrl=SQS_QUEUE_URL, Entries=entries)
+        entries_to_send = []
+        for ticker, articles in articles_by_ticker.items():
+            message_body = {
+                'ticker_code': ticker,
+                'articles': articles,
+                'is_market_open': is_market_open,
+                'created_at': datetime.now().isoformat()
+            }
+            entries_to_send.append({
+                'Id': ticker,
+                'MessageBody': json.dumps(message_body)
+            })
+
+        # 배치 단위 삽입 (최대 10개 그룹씩)
+        for i in range(0, len(entries_to_send), 10):
+            batch = entries_to_send[i:i+10]
+            sqs_client.send_message_batch(QueueUrl=SQS_QUEUE_URL, Entries=batch)
         
-        logger.info("✅ Successfully sent all articles to SQS.")
+        logger.info("✅ Successfully sent all article groups to SQS.")
         
     except Exception as e:
         logger.exception("A critical error occurred in the lambda handler.")
@@ -133,5 +152,5 @@ def lambda_handler(event, context):
 
     return {
         'statusCode': 200,
-        'body': f'Successfully processed and sent {len(final_article_list)} articles to SQS.'
+        'body': f'Successfully processed and sent news for {len(articles_by_ticker)} groups to SQS.'
     }

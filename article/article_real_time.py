@@ -146,7 +146,12 @@ def lambda_handler(event, context):
             logger.info("No new articles to process.")
             return {'statusCode': 200, 'body': 'No new articles found.'}
 
-        logger.info("Sending news for %d tickers/groups to SQS queue...", len(articles_by_ticker))
+        ticker_groups_to_send = list(articles_by_ticker.keys())
+        logger.info(
+            "Sending news for %d tickers/groups to SQS queue: %s",
+            len(ticker_groups_to_send),
+            ticker_groups_to_send
+        )
         
         entries_to_send = []
         for ticker_code, articles in articles_by_ticker.items():

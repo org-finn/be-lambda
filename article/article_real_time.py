@@ -40,23 +40,18 @@ def get_market_status():
     """Polygon API를 호출하여 현재 시장 상태가 'OPEN'인지 여부를 반환합니다."""
     try:
         logger.info("Checking market status...")
-        # polygon-api-client 라이브러리 사용
         status = polygon_client.get_market_status()
-
         nasdaq_status = getattr(status.exchanges, 'nasdaq', 'unknown').lower()
         is_open = nasdaq_status == 'open'
-        
         logger.info(f"Market status check complete. Market is {'OPEN' if is_open else 'CLOSED'}.")
         return is_open
     except Exception as e:
         logger.exception("An error occurred during market status check. Assuming market is CLOSED.")
-        # 오류 발생 시 안전하게 시장을 닫힌 것으로 간주
         return False
     
 def fetch_articles(published_utc_gte, ticker_code=None, limit=10):
     """Polygon API를 호출하여 뉴스를 가져옵니다."""
     try:
-        # ticker_code가 있으면 해당 티커 뉴스를, 없으면 전체 뉴스를 가져옵니다.
         response = polygon_client.list_ticker_news(
             ticker=ticker_code,
             limit=limit,
@@ -70,94 +65,105 @@ def fetch_articles(published_utc_gte, ticker_code=None, limit=10):
     return []
 
 def lambda_handler(event, context):
-    """티커별로 뉴스를 그룹화하여 SQS 큐로 전송합니다."""
+    """여러 종목 정보가 포함된 뉴스를 각 티커별로 그룹화하여 SQS로 전송합니다."""
     logger.info("Article collection Lambda handler started.")
     
     try:
-        # 0. 핸들러 시작 시 시장 상태를 한 번만 확인
         is_market_open = get_market_status()
+        time_n_minutes_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
         
-        # 1. n분 전 시간 계산 (EST 기준)
-        time_n_minutes_ago = (datetime.now(pytz.timezone(MARKET_TIMEZONE)) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        
-        # ⭐ 티커별로 기사를 저장할 딕셔너리 및 중복 방지용 set
         articles_by_ticker = {}
         seen_article_ids = set()
+        
+        # Supabase에서 티커 정보를 미리 가져와 빠른 조회를 위한 맵과 set 생성
+        all_tickers_from_db = get_tickers_from_supabase()
+        ticker_info_map = {
+            ticker[1]: {'id': ticker[0], 'name': ticker[2]} for ticker in all_tickers_from_db
+        }
+        supported_tickers_set = set(ticker_info_map.keys())
 
-        # 2. 전체 최신 뉴스 수집 (limit 20)
+        # 처리할 모든 뉴스를 담을 리스트 (전체 뉴스 + 티커별 뉴스)
+        articles_to_process = []
+        
+        # 1. 전체 최신 뉴스 수집
         logger.info("Fetching general articles...")
-        general_articles = fetch_articles(published_utc_gte=time_n_minutes_ago, limit=20)
-        for article in general_articles:
-            if article.id not in seen_article_ids:
-                sentiment = None
-                reasoning = None
-                if hasattr(article, 'insights') and article.insights:
-                    first_insight = article.insights[0]
-                    sentiment = first_insight.sentiment
-                    reasoning = first_insight.sentiment_reasoning
-                            
-                payload = {
-                    'published_date': article.published_utc, 'title': article.title,
-                    'description': article.description, 'article_url': article.article_url,
-                    'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
-                    'distinct_id': article.id, 'sentiment': sentiment,
-                    'reasoning': reasoning
-                }
-                # 티커가 없는 뉴스는 'GENERAL' 키로 그룹화
-                if 'GENERAL' not in articles_by_ticker:
-                    articles_by_ticker['GENERAL'] = []
-                articles_by_ticker['GENERAL'].append(payload)
-                seen_article_ids.add(article.id)
-
-        # 3. 티커별 최신 뉴스 수집 (limit 10)
-        tickers = get_tickers_from_supabase()
-        if tickers:
-            for ticker_id, ticker_code, short_company_name in tickers:
+        articles_to_process.extend(fetch_articles(published_utc_gte=time_n_minutes_ago, limit=50))
+        
+        # 2. 티커별 최신 뉴스 수집
+        if all_tickers_from_db:
+            for _, ticker_code, _ in all_tickers_from_db:
                 logger.info("Fetching articles for %s...", ticker_code)
-                ticker_articles = fetch_articles(published_utc_gte=time_n_minutes_ago, ticker_code=ticker_code, limit=10)
-                
-                for article in ticker_articles:
-                    if article.id not in seen_article_ids:
-                        sentiment = None
-                        reasoning = None
-                        if hasattr(article, 'insights') and article.insights:
-                            first_insight = article.insights[0]
-                            sentiment = first_insight.get('sentiment')
-                            reasoning = first_insight.get('sentiment_reasoning')
-                            
-                        payload = {
-                            'published_date': article.published_utc, 'title': article.title,
-                            'description': article.description, 'article_url': article.article_url,
-                            'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
-                            'distinct_id': article.id, 'sentiment': sentiment,
-                            'reasoning': reasoning    
-                        }
-                        # 해당 티커 코드로 그룹화
-                        if ticker_code not in articles_by_ticker:
-                            articles_by_ticker[ticker_code] = []
-                        articles_by_ticker[ticker_code].append(payload)
-                        seen_article_ids.add(article.id)
+                articles_to_process.extend(fetch_articles(published_utc_gte=time_n_minutes_ago, ticker_code=ticker_code, limit=10))
 
-        # 4. 수집된 뉴스를 티커 단위로 SQS 큐로 전송
+        # 3. 수집된 모든 뉴스를 순회하며 티커별로 그룹화
+        for article in articles_to_process:
+            if article.id in seen_article_ids:
+                continue
+
+            sentiment, reasoning = None, None
+            if hasattr(article, 'insights') and article.insights:
+                first_insight = article.insights[0]
+                sentiment = first_insight.sentiment
+                reasoning = first_insight.sentiment_reasoning
+
+            # ⭐️ 공통 페이로드 생성 (티커 정보 제외)
+            base_payload = {
+                'published_date': article.published_utc, 'title': article.title,
+                'description': article.description, 'article_url': article.article_url,
+                'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
+                'sentiment': sentiment, 'reasoning': reasoning
+            }
+            
+            # 이 기사와 연관된 모든 티커를 찾음
+            related_tickers = set(article.tickers)
+            if hasattr(article, 'insights') and article.insights:
+                for insight in article.insights:
+                    related_tickers.add(insight.ticker)
+
+            is_related_to_supported_ticker = False
+            if related_tickers:
+                # 각 연관 티커 그룹에 뉴스 추가
+                for ticker_code in related_tickers:
+                    # 우리 서비스에서 지원하는 티커인지 확인
+                    if ticker_code in supported_tickers_set:
+                        payload = base_payload.copy()
+                        # ⭐️ 원본 ID와 티커 코드를 조합하여 새로운 고유 ID 생성
+                        payload['distinct_id'] = f"{article.id}-{ticker_code}"
+                        articles_by_ticker.setdefault(ticker_code, []).append(payload)
+                        is_related_to_supported_ticker = True
+            
+            # 연관 티커가 없거나, 있더라도 모두 지원하지 않는 티커일 경우 GENERAL 그룹에 추가
+            if not is_related_to_supported_ticker:
+                payload = base_payload.copy()
+                # 원본 ID 사용(GENERAL에 속하는 아티클들은 distinct_id를 그대로 쓰므로 무조건 유니크함)
+                payload['distinct_id'] = article.id
+                articles_by_ticker.setdefault('GENERAL', []).append(payload)
+
+            seen_article_ids.add(article.id)
+
+        # 4. 수집된 뉴스를 SQS 큐로 전송
         if not articles_by_ticker:
-            logger.info("No new articles found.")
+            logger.info("No new articles to process.")
             return {'statusCode': 200, 'body': 'No new articles found.'}
 
         logger.info("Sending news for %d tickers/groups to SQS queue...", len(articles_by_ticker))
         
         entries_to_send = []
-        for ticker, articles in articles_by_ticker.items():
+        for ticker_code, articles in articles_by_ticker.items():
+            ticker_info = ticker_info_map.get(ticker_code, {})
             message_body = {
-                'ticker_code': ticker,
+                'ticker_code': ticker_code,
+                'ticker_id': ticker_info.get('id'),
+                'short_company_name': ticker_info.get('name'),
                 'articles': articles,
                 'is_market_open': is_market_open,
                 'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
             }
             entries_to_send.append({
-                'Id': ticker,
+                'Id': ticker_code.replace('.', '-'), # SQS ID에 '.' 허용 안됨
                 'MessageBody': json.dumps(message_body)
             })
-
+        
         # 배치 단위 삽입 (최대 10개 그룹씩)
         for i in range(0, len(entries_to_send), 10):
             batch = entries_to_send[i:i+10]

@@ -16,8 +16,6 @@ SQS_QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
-MARKET_TIMEZONE = 'US/Eastern' # Nasdaq/NYSE 시장 기준 시간대
-
 # 클라이언트는 핸들러 함수 밖에 선언하여 재사용 (성능 최적화)
 sqs_client = boto3.client('sqs')
 polygon_client = RESTClient(POLYGON_API_KEY)
@@ -49,7 +47,7 @@ def get_market_status():
         logger.exception("An error occurred during market status check. Assuming market is CLOSED.")
         return False
     
-def fetch_articles(published_utc_gte, ticker_code=None, limit=10):
+def fetch_articles(published_utc_gte, ticker_code, limit):
     """Polygon API를 호출하여 뉴스를 가져옵니다."""
     try:
         response = polygon_client.list_ticker_news(
@@ -70,12 +68,12 @@ def lambda_handler(event, context):
     
     try:
         is_market_open = get_market_status()
-        if is_market_open: # 정규장 여부에 따라 뉴스 수집 주기가 다르므로, 수집 범위도 다르게 정의
-            time_n_minutes_ago = (datetime.now(timezone.utc) - timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        else:
-            time_n_minutes_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
-            
-        prediction_date = datetime.now(pytz.timezone(MARKET_TIMEZONE)).replace(second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
+        current_utc_time = datetime.now(timezone.utc)
+        time_n_minutes_ago = (current_utc_time - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ') # created_at이 아닌 published_date gt 조건이므로, 좀 넉넉하게 범위를 잡아야함
+        logger.info("Will fetch article %s ~ %s of UTC", time_n_minutes_ago, current_utc_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
+        
+        prediction_date = datetime.now(pytz.timezone('US/Eastern')) \
+            .replace(second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
         
         articles_by_ticker = {}
         seen_article_ids = set()
@@ -92,13 +90,13 @@ def lambda_handler(event, context):
         
         # 1. 전체 최신 뉴스 수집
         logger.info("Fetching general articles...")
-        articles_to_process.extend(fetch_articles(published_utc_gte=time_n_minutes_ago, limit=50))
+        articles_to_process.extend(fetch_articles(time_n_minutes_ago, None, 50))
         
         # 2. 티커별 최신 뉴스 수집
         if all_tickers_from_db:
             for _, ticker_code, _ in all_tickers_from_db:
                 logger.info("Fetching articles for %s...", ticker_code)
-                articles_to_process.extend(fetch_articles(published_utc_gte=time_n_minutes_ago, ticker_code=ticker_code, limit=10))
+                articles_to_process.extend(fetch_articles(time_n_minutes_ago, ticker_code, 20))
 
         # 3. 수집된 모든 뉴스를 순회하며 티커별로 그룹화
         for article in articles_to_process:
@@ -167,7 +165,7 @@ def lambda_handler(event, context):
                 'short_company_name': ticker_info.get('name'),
                 'articles': articles,
                 'is_market_open': is_market_open,
-                'prediction_date' : prediction_date,
+                'prediction_date' : prediction_date.isoformat(),
                 'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
             }
             entries_to_send.append({

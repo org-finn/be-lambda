@@ -70,7 +70,12 @@ def lambda_handler(event, context):
     
     try:
         is_market_open = get_market_status()
-        time_n_minutes_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        if is_market_open: # 정규장 여부에 따라 뉴스 수집 주기가 다르므로, 수집 범위도 다르게 정의
+            time_n_minutes_ago = (datetime.now(timezone.utc) - timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        else:
+            time_n_minutes_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+        prediction_date = datetime.now(pytz.timezone(MARKET_TIMEZONE)).replace(second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
         
         articles_by_ticker = {}
         seen_article_ids = set()
@@ -162,6 +167,7 @@ def lambda_handler(event, context):
                 'short_company_name': ticker_info.get('name'),
                 'articles': articles,
                 'is_market_open': is_market_open,
+                'prediction_date' : prediction_date,
                 'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
             }
             entries_to_send.append({

@@ -149,9 +149,13 @@ def lambda_handler(event, context):
             logger.info("No new articles to process.")
             return {'statusCode': 200, 'body': 'No new articles found.'}
 
+        # SQS로 보낼 총 기사 수 계산
+        total_article_count = sum(len(articles) for articles in articles_by_ticker.values())
+        
         ticker_groups_to_send = list(articles_by_ticker.keys())
         logger.info(
-            "Sending news for %d tickers/groups to SQS queue: %s",
+            "Sending %d unique articles for %d tickers/groups to SQS queue: %s",
+            total_article_count, # 👈 총 기사 수 로그 추가
             len(ticker_groups_to_send),
             ticker_groups_to_send
         )

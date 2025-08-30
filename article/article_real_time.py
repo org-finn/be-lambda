@@ -53,7 +53,7 @@ def fetch_articles(published_utc_gte, ticker_code, limit):
         response = polygon_client.list_ticker_news(
             ticker=ticker_code,
             limit=limit,
-            order='desc',
+            order='asc',
             published_utc_gte=published_utc_gte
         )
         if response:
@@ -68,9 +68,14 @@ def lambda_handler(event, context):
     
     try:
         is_market_open = get_market_status()
-        current_utc_time = datetime.now(timezone.utc)
-        time_n_minutes_ago = (current_utc_time - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ') # created_at이 아닌 published_date gt 조건이므로, 좀 넉넉하게 범위를 잡아야함
-        logger.info("Will fetch article %s ~ %s of UTC", time_n_minutes_ago, current_utc_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
+        current_utc_time = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        if is_market_open:
+            published_utc_gte = (current_utc_time - timedelta(hours=1)) \
+            .strftime('%Y-%m-%dT%H:%M:%SZ') # created_at이 아닌 published_date gt 조건이므로, 좀 넉넉하게 범위를 잡아야함
+        else:
+            published_utc_gte = (current_utc_time - timedelta(hours=2)) \
+            .strftime('%Y-%m-%dT%H:%M:%SZ')
+        logger.info("Will fetch article %s ~ %s of UTC", published_utc_gte, current_utc_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
         
         prediction_date = datetime.now(pytz.timezone('US/Eastern')) \
             .replace(second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
@@ -90,13 +95,13 @@ def lambda_handler(event, context):
         
         # 1. 전체 최신 뉴스 수집
         logger.info("Fetching general articles...")
-        articles_to_process.extend(fetch_articles(time_n_minutes_ago, None, 50))
+        articles_to_process.extend(fetch_articles(published_utc_gte, None, 50))
         
         # 2. 티커별 최신 뉴스 수집
         if all_tickers_from_db:
             for _, ticker_code, _ in all_tickers_from_db:
                 logger.info("Fetching articles for %s...", ticker_code)
-                articles_to_process.extend(fetch_articles(time_n_minutes_ago, ticker_code, 20))
+                articles_to_process.extend(fetch_articles(published_utc_gte, ticker_code, 30))
 
         # 3. 수집된 모든 뉴스를 순회하며 티커별로 그룹화
         for article in articles_to_process:

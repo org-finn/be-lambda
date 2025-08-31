@@ -73,112 +73,78 @@ def lambda_handler(event, context):
             published_utc_gte = (current_utc_time - timedelta(hours=2)) \
             .strftime('%Y-%m-%dT%H:%M:%SZ') # created_at이 아닌 published_date gt 조건이므로, 좀 넉넉하게 범위를 잡아야함
         else:
-            published_utc_gte = (current_utc_time - timedelta(hours=3)) \
+            published_utc_gte = (current_utc_time - timedelta(hours=4)) \
             .strftime('%Y-%m-%dT%H:%M:%SZ')
-        logger.info("Will fetch article %s ~ %s of UTC", published_utc_gte, current_utc_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
+        logger.info("Will fetch article %s ~ %s of UTC", published_utc_gte, 
+                    current_utc_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
         
         prediction_date = datetime.now(pytz.timezone('US/Eastern')) \
             .replace(second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
         
-        articles_by_ticker = {}
-        seen_article_ids = set()
-        
         # Supabase에서 티커 정보를 미리 가져와 빠른 조회를 위한 맵과 set 생성
         all_tickers_from_db = get_tickers_from_supabase()
-        ticker_info_map = {
-            ticker[1]: {'id': ticker[0], 'name': ticker[2]} for ticker in all_tickers_from_db
-        }
-        supported_tickers_set = set(ticker_info_map.keys())
-
-        # 처리할 모든 뉴스를 담을 리스트 (전체 뉴스 + 티커별 뉴스)
-        articles_to_process = []
+        supported_tickers_set = set(ticker[1] for ticker in all_tickers_from_db)
         
         # 1. 전체 최신 뉴스 수집
         logger.info("Fetching general articles...")
-        articles_to_process.extend(fetch_articles(published_utc_gte, None, 50))
+        articles_to_process = fetch_articles(published_utc_gte, None, 100)
         
-        # 2. 티커별 최신 뉴스 수집
-        if all_tickers_from_db:
-            for _, ticker_code, _ in all_tickers_from_db:
-                logger.info("Fetching articles for %s...", ticker_code)
-                articles_to_process.extend(fetch_articles(published_utc_gte, ticker_code, 30))
-
-        # 3. 수집된 모든 뉴스를 순회하며 티커별로 그룹화
+        articles_to_send = []
+        # 2. 아티클별 페이로드 생성
         for article in articles_to_process:
-            if article.id in seen_article_ids:
-                continue
-
-            sentiment, reasoning = None, None
-            if hasattr(article, 'insights') and article.insights:
-                first_insight = article.insights[0]
-                sentiment = first_insight.sentiment
-                reasoning = first_insight.sentiment_reasoning
-
-            # ⭐️ 공통 페이로드 생성 (티커 정보 제외)
-            base_payload = {
+            # ⭐️ 공통 페이로드 생성 (티커, 감정 정보 제외)
+            payload = {
                 'published_date': article.published_utc, 'title': article.title,
                 'description': article.description, 'article_url': article.article_url,
                 'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
-                'sentiment': sentiment, 'reasoning': reasoning
+                'disinct_id' : article.id
             }
             
-            # 이 기사와 연관된 모든 티커를 찾음
-            related_tickers = set(article.tickers)
-            if hasattr(article, 'insights') and article.insights:
-                for insight in article.insights:
-                    related_tickers.add(insight.ticker)
-
-            is_related_to_supported_ticker = False
-            if related_tickers:
-                # 각 연관 티커 그룹에 뉴스 추가
-                for ticker_code in related_tickers:
-                    # 우리 서비스에서 지원하는 티커인지 확인
-                    if ticker_code in supported_tickers_set:
-                        payload = base_payload.copy()
-                        # ⭐️ 원본 ID와 티커 코드를 조합하여 새로운 고유 ID 생성
-                        payload['distinct_id'] = f"{article.id}-{ticker_code}"
-                        articles_by_ticker.setdefault(ticker_code, []).append(payload)
-                        is_related_to_supported_ticker = True
+            # tickers(code) 필터링 및 추가
+            tickers = []
+            for ticker_code in article.tickers:
+                 if ticker_code in supported_tickers_set:
+                     tickers.append(ticker_code)
+            payload['tickers'] = tickers
             
-            # 연관 티커가 없거나, 있더라도 모두 지원하지 않는 티커일 경우 GENERAL 그룹에 추가
-            if not is_related_to_supported_ticker:
-                payload = base_payload.copy()
-                # 원본 ID 사용(GENERAL에 속하는 아티클들은 distinct_id를 그대로 쓰므로 무조건 유니크함)
-                payload['distinct_id'] = article.id
-                articles_by_ticker.setdefault('GENERAL', []).append(payload)
+            # insights 필터링 및 추가
+            insights = []
+            for insight in article.insights:
+                ticker_code = insight.ticker
+                sentiemnt = insight.sentiment
+                reasoning = insight.sentiment_reasoning
+                if ticker_code in supported_tickers_set:
+                    insights.append({
+                        "ticker_code" : ticker_code,
+                        "sentiment" : sentiemnt,
+                        "reasoning" : reasoning
+                    })
+            payload['insights'] = insights
+            
+            articles_to_send.append(payload)
 
-            seen_article_ids.add(article.id)
-
-        # 4. 수집된 뉴스를 SQS 큐로 전송
-        if not articles_by_ticker:
+        # 3. 수집된 뉴스를 SQS 큐로 전송
+        if not articles_to_send:
             logger.info("No new articles to process.")
             return {'statusCode': 200, 'body': 'No new articles found.'}
 
         # SQS로 보낼 총 기사 수 계산
-        total_article_count = sum(len(articles) for articles in articles_by_ticker.values())
+        total_article_count = len(articles_to_send)
+        logger.info("Sending %d unique articles to SQS queue",
+            total_article_count)
         
-        ticker_groups_to_send = list(articles_by_ticker.keys())
-        logger.info(
-            "Sending %d unique articles for %d tickers/groups to SQS queue: %s",
-            total_article_count, # 👈 총 기사 수 로그 추가
-            len(ticker_groups_to_send),
-            ticker_groups_to_send
-        )
-        
+        # 4. SQS로 메시지 전송
         entries_to_send = []
-        for ticker_code, articles in articles_by_ticker.items():
-            ticker_info = ticker_info_map.get(ticker_code, {})
+        for article in articles_to_send:
             message_body = {
-                'ticker_code': ticker_code,
-                'ticker_id': ticker_info.get('id'),
-                'short_company_name': ticker_info.get('name'),
-                'articles': articles,
+                'article': article,
                 'is_market_open': is_market_open,
                 'prediction_date' : prediction_date.isoformat(),
                 'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
             }
+            disinct_id = article['disinct_id']
             entries_to_send.append({
-                'Id': ticker_code.replace('.', '-'), # SQS ID에 '.' 허용 안됨
+                'Id': disinct_id.replace('.', '-'), # SQS ID에 '.' 허용 안됨
                 'MessageBody': json.dumps(message_body)
             })
         
@@ -187,7 +153,7 @@ def lambda_handler(event, context):
             batch = entries_to_send[i:i+10]
             sqs_client.send_message_batch(QueueUrl=SQS_QUEUE_URL, Entries=batch)
         
-        logger.info("✅ Successfully sent all article groups to SQS.")
+        logger.info("✅ Successfully sent all articles to SQS.")
         
     except Exception as e:
         logger.exception("A critical error occurred in the lambda handler.")
@@ -195,5 +161,5 @@ def lambda_handler(event, context):
 
     return {
         'statusCode': 200,
-        'body': f'Successfully processed and sent news for {len(articles_by_ticker)} groups to SQS.'
+        'body': f'Successfully processed and sent {len(entries_to_send)} news to SQS.'
     }

@@ -174,33 +174,37 @@ def lambda_handler(event, context):
         
         logger.info("✅ Successfully sent all articles to SQS.")
         
-        # 4-2. 예측 메시지 전송
-        if sentiment_stats:
-            logger.info("Sending %d sentiment stats to SQS queue...", 
-                len(sentiment_stats))
-            
-            stats_entries_to_send = []
-            for ticker_code, counts in sentiment_stats.items():
-                ticker_info = ticker_info_map.get(ticker_code, {})
-                message_body = {
-                    'ticker_code': ticker_code,
-                    'ticker_id': ticker_info.get('id'),
-                    'positive_news_count': counts['positive'],
-                    'negative_news_count': counts['negative'],
-                    'neutral_news_count': counts['neutral'],
-                    'prediction_date': prediction_date.isoformat(),
-                    'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
-                }
-                stats_entries_to_send.append({
-                    'Id': ticker_code.replace('.', '-'),
-                    'MessageBody': json.dumps(message_body)
-                })
+        # 4-2. 예측 메시지 전송(정규장일때만)
+        if not is_market_open:
+            logger.info("Market is closed so do not sent prediction data to queue.")
+        else:
+            if sentiment_stats:
+                logger.info("Sending %d sentiment stats to SQS queue...", 
+                    len(sentiment_stats))
+                
+                stats_entries_to_send = []
+                for ticker_code, counts in sentiment_stats.items():
+                    ticker_info = ticker_info_map.get(ticker_code, {})
+                    message_body = {
+                        'ticker_code': ticker_code,
+                        'ticker_id': ticker_info.get('id'),
+                        'short_company_name' : ticker_info.get('name'),
+                        'positive_news_count': counts['positive'],
+                        'negative_news_count': counts['negative'],
+                        'neutral_news_count': counts['neutral'],
+                        'prediction_date': prediction_date.isoformat(),
+                        'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
+                    }
+                    stats_entries_to_send.append({
+                        'Id': ticker_code.replace('.', '-'),
+                        'MessageBody': json.dumps(message_body)
+                    })
 
-            # 통계 메시지 일괄 전송
-            for i in range(0, len(stats_entries_to_send), 10):
-                batch = stats_entries_to_send[i:i+10]
-                sqs_client.send_message_batch(QueueUrl=PREDICTION_SQS_QUEUE_URL, Entries=batch)
-            logger.info("✅ Successfully sent all sentiment stats to SQS.")
+                # 통계 메시지 일괄 전송
+                for i in range(0, len(stats_entries_to_send), 10):
+                    batch = stats_entries_to_send[i:i+10]
+                    sqs_client.send_message_batch(QueueUrl=PREDICTION_SQS_QUEUE_URL, Entries=batch)
+                logger.info("✅ Successfully sent all sentiment stats to SQS.")
 
     except Exception as e:
         logger.exception("A critical error occurred in the lambda handler.")

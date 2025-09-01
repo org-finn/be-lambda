@@ -193,11 +193,12 @@ def fetch_stock_data_if_market_open():
         logger.exception(f"An error occurred during stock price collection logic: {e}")
 
 
-def save_data_in_s3(current_date, s3_payload):
+def save_data_in_s3(current_date, ticker_id, s3_payload):
     """S3에 데이터를 저장하는 함수. 실패 시 예외를 발생시킵니다."""
     try:
         s3_client = boto3.client('s3')
-        s3_key = f"{datetime.now(pytz.timezone(MARKET_TIMEZONE)).strftime('%Y/%m/%d/%H/%M/00')}/stock_prices.json"
+        now_et = datetime.now(pytz.timezone(MARKET_TIMEZONE))
+        s3_key = f"{now_et.strftime('%Y/%m/%d')}/{ticker_id}/{now_et.strftime('%H-%M-%S')}_stock_prices.json"
         
         s3_client.put_object(
             Bucket=S3_BUCKET_NAME,

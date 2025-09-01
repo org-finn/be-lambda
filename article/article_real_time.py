@@ -114,7 +114,7 @@ def lambda_handler(event, context):
                 'published_date': article.published_utc, 'title': article.title,
                 'description': article.description, 'article_url': article.article_url,
                 'thumbnail_url': getattr(article, 'image_url', None), 'author': article.author,
-                'disinct_id' : article.id
+                'distinct_id' : article.id
             }
             
             # tickers(code) 필터링 및 추가
@@ -161,9 +161,9 @@ def lambda_handler(event, context):
                 'is_market_open': is_market_open,
                 'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
             }
-            disinct_id = article['disinct_id']
+            distinct_id = article['distinct_id']
             entries_to_send.append({
-                'Id': disinct_id.replace('.', '-'), # SQS ID에 '.' 허용 안됨
+                'Id': distinct_id.replace('.', '-'), # SQS ID에 '.' 허용 안됨
                 'MessageBody': json.dumps(message_body)
             })
         

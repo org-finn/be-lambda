@@ -189,9 +189,9 @@ def lambda_handler(event, context):
                         'ticker_code': ticker_code,
                         'ticker_id': ticker_info.get('id'),
                         'short_company_name' : ticker_info.get('name'),
-                        'positive_news_count': counts['positive'],
-                        'negative_news_count': counts['negative'],
-                        'neutral_news_count': counts['neutral'],
+                        'positive_article_count': counts['positive'],
+                        'negative_article_count': counts['negative'],
+                        'neutral_article_count': counts['neutral'],
                         'prediction_date': prediction_date.isoformat(),
                         'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
                     }

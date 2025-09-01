@@ -6,13 +6,15 @@ from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from polygon import RESTClient
 import pytz
+from collections import defaultdict
 
 # --- 로거, 환경 변수, 클라이언트 초기화 ---
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY')
-SQS_QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
+ARTICLE_SQS_QUEUE_URL = os.environ.get('ARTICLE_SQS_QUEUE_URL')
+PREDICTION_SQS_QUEUE_URL = os.environ.get('PREDICTION_SQS_QUEUE_URL')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
@@ -62,6 +64,17 @@ def fetch_articles(published_utc_gte, ticker_code, limit):
         logger.error("Polygon news API failed for ticker %s: %s", ticker_code or "ALL", e)
     return []
 
+def add_news_count_for_sentiment(insight, ticker, sentiment_stats):
+
+    sentiment = insight.sentiment
+    if sentiment == 'positive':
+        sentiment_stats[ticker]["positive"] += 1
+    elif sentiment == 'negative':
+        sentiment_stats[ticker]["negative"] += 1
+    else: # 'neutral' 또는 None일 경우
+        sentiment_stats[ticker]["neutral"] += 1
+
+
 def lambda_handler(event, context):
     """여러 종목 정보가 포함된 뉴스를 각 티커별로 그룹화하여 SQS로 전송합니다."""
     logger.info("Article collection Lambda handler started.")
@@ -83,6 +96,7 @@ def lambda_handler(event, context):
         
         # Supabase에서 티커 정보를 미리 가져와 빠른 조회를 위한 맵과 set 생성
         all_tickers_from_db = get_tickers_from_supabase()
+        ticker_info_map = { ticker[1]: {'id': ticker[0], 'name': ticker[2]} for ticker in all_tickers_from_db }
         supported_tickers_set = set(ticker[1] for ticker in all_tickers_from_db)
         
         # 1. 전체 최신 뉴스 수집
@@ -90,6 +104,9 @@ def lambda_handler(event, context):
         articles_to_process = fetch_articles(published_utc_gte, None, 100)
         
         articles_to_send = []
+        # 티커별 sentiment_news_count
+        sentiment_stats = defaultdict(lambda: {"positive": 0, "negative": 0, "neutral": 0})
+        
         # 2. 아티클별 페이로드 생성
         for article in articles_to_process:
             # ⭐️ 공통 페이로드 생성 (티커, 감정 정보 제외)
@@ -103,7 +120,7 @@ def lambda_handler(event, context):
             # tickers(code) 필터링 및 추가
             tickers = []
             for ticker_code in article.tickers:
-                 if ticker_code in supported_tickers_set:
+                 if ticker_code in supported_tickers_set: # 우리 서비스에서 지원하는 티커여야함
                      tickers.append(ticker_code)
             payload['tickers'] = tickers
             
@@ -119,6 +136,7 @@ def lambda_handler(event, context):
                         "sentiment" : sentiemnt,
                         "reasoning" : reasoning
                     })
+                    add_news_count_for_sentiment(insight, ticker_code, sentiment_stats) # 뉴스 감정 count 업데이트
             payload['insights'] = insights
             
             articles_to_send.append(payload)
@@ -128,18 +146,19 @@ def lambda_handler(event, context):
             logger.info("No new articles to process.")
             return {'statusCode': 200, 'body': 'No new articles found.'}
 
-        # SQS로 보낼 총 기사 수 계산
-        total_article_count = len(articles_to_send)
-        logger.info("Sending %d unique articles to SQS queue",
-            total_article_count)
         
         # 4. SQS로 메시지 전송
+
+        # 4-1. 아티클 메시지 전송
+        # SQS로 보낼 총 기사 수 계산
+        logger.info("Sending %d unique articles to SQS queue...",
+            len(articles_to_send))
+        
         entries_to_send = []
         for article in articles_to_send:
             message_body = {
                 'article': article,
                 'is_market_open': is_market_open,
-                'prediction_date' : prediction_date.isoformat(),
                 'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
             }
             disinct_id = article['disinct_id']
@@ -151,10 +170,38 @@ def lambda_handler(event, context):
         # 배치 단위 삽입 (최대 10개 그룹씩)
         for i in range(0, len(entries_to_send), 10):
             batch = entries_to_send[i:i+10]
-            sqs_client.send_message_batch(QueueUrl=SQS_QUEUE_URL, Entries=batch)
+            sqs_client.send_message_batch(QueueUrl=ARTICLE_SQS_QUEUE_URL, Entries=batch)
         
         logger.info("✅ Successfully sent all articles to SQS.")
         
+        # 4-2. 예측 메시지 전송
+        if sentiment_stats:
+            logger.info("Sending %d sentiment stats to SQS queue...", 
+                len(sentiment_stats))
+            
+            stats_entries_to_send = []
+            for ticker_code, counts in sentiment_stats.items():
+                ticker_info = ticker_info_map.get(ticker_code, {})
+                message_body = {
+                    'ticker_code': ticker_code,
+                    'ticker_id': ticker_info.get('id'),
+                    'positive_news_count': counts['positive'],
+                    'negative_news_count': counts['negative'],
+                    'neutral_news_count': counts['neutral'],
+                    'prediction_date': prediction_date.isoformat(),
+                    'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
+                }
+                stats_entries_to_send.append({
+                    'Id': ticker_code.replace('.', '-'),
+                    'MessageBody': json.dumps(message_body)
+                })
+
+            # 통계 메시지 일괄 전송
+            for i in range(0, len(stats_entries_to_send), 10):
+                batch = stats_entries_to_send[i:i+10]
+                sqs_client.send_message_batch(QueueUrl=PREDICTION_SQS_QUEUE_URL, Entries=batch)
+            logger.info("✅ Successfully sent all sentiment stats to SQS.")
+
     except Exception as e:
         logger.exception("A critical error occurred in the lambda handler.")
         raise e

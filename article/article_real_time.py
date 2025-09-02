@@ -174,7 +174,9 @@ def lambda_handler(event, context):
             logger.info("✅ Successfully sent all articles to SQS.")
             
         # 3-2. 예측 메시지 전송(정규장 외에도 다음 정규장을 위해 예측 계속 수행)
-        if sentiment_stats:
+        if not sentiment_stats:
+            logger.info("No new sentiment stats to process.")
+        else:
             logger.info("Sending %d sentiment stats to SQS queue...", 
                 len(sentiment_stats))
             

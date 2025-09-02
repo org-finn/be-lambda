@@ -83,10 +83,10 @@ def lambda_handler(event, context):
         is_market_open = get_market_status()
         current_utc_time = datetime.now(timezone.utc).replace(second=0, microsecond=0)
         if is_market_open:
-            published_utc_gte = (current_utc_time - timedelta(hours=2)) \
+            published_utc_gte = (current_utc_time - timedelta(hours=1)) \
             .strftime('%Y-%m-%dT%H:%M:%SZ') # created_at이 아닌 published_date gt 조건이므로, 좀 넉넉하게 범위를 잡아야함
         else:
-            published_utc_gte = (current_utc_time - timedelta(hours=4)) \
+            published_utc_gte = (current_utc_time - timedelta(hours=2)) \
             .strftime('%Y-%m-%dT%H:%M:%SZ')
         logger.info("Will fetch article %s ~ %s of UTC", published_utc_gte, 
                     current_utc_time.strftime('%Y-%m-%dT%H:%M:%SZ'))

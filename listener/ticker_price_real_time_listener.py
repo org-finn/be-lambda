@@ -18,6 +18,7 @@ dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('ticker_price_real_time') # DynamoDB 테이블 이름
 US_CALENDAR = xcals.get_calendar("XNYS")
 US_EASTERN_TZ = pytz.timezone("America/New_York")
+UTC_TZ = pytz.utc
 
 def get_market_info(target_date_str: str) -> dict | None:
     """미국 동부 시간(ET) 기준으로 시장 정보를 계산합니다."""
@@ -26,15 +27,20 @@ def get_market_info(target_date_str: str) -> dict | None:
         return None
 
     schedule = US_CALENDAR.schedule.loc[target_date_str]
-    market_open_et = schedule.market_open.astimezone(US_EASTERN_TZ)
-    market_close_et = schedule.market_close.astimezone(US_EASTERN_TZ)
     
+    # ✅ 변경점: UTC가 아닌 ET 기준으로 개장/폐장 시간 계산
+    market_open_et = schedule['open'].astimezone(US_EASTERN_TZ)
+    market_close_et = schedule['close'].astimezone(US_EASTERN_TZ)
+    
+    # 초 단위를 0으로 설정
     market_open_et = market_open_et.replace(second=0, microsecond=0)
     
     duration_minutes = (market_close_et - market_open_et).total_seconds() / 60
     max_len = int(duration_minutes / 5)
 
+    # ✅ 변경점: ET 개장 시간 반환
     return {"open_time_et": market_open_et, "max_len": max_len}
+
 
 
 def lambda_handler(event, context):
@@ -60,13 +66,22 @@ def lambda_handler(event, context):
             market_open_et = market_info['open_time_et']
             max_len = market_info['max_len']
 
-            # 3. 고정 인덱스 계산
-            hours_str = new_price_data['hours'].split('(')[0]
-            data_time_et = US_EASTERN_TZ.localize(datetime.strptime(f"{price_date_str} {hours_str}", "%Y-%m-%d %H:%M:%S"))
+            # 3. 고정 인덱스 계산 (ET 기준)
+            # 1. 받은 시간 문자열(UTC 기준)으로 순수(naive) datetime 객체 생성
+            hours_str = new_price_data['hours'] # (EST)가 없으므로 split 불필요
+            naive_dt_utc = datetime.strptime(f"{price_date_str} {hours_str}", "%Y-%m-%d %H:%M:%S")
             
-            data_time_et = data_time_et.replace(second=0, microsecond=0)
+            # 2. 이 객체가 UTC 시간임을 명확하게 지정
+            data_time_utc = UTC_TZ.localize(naive_dt_utc)
             
-            time_diff_minutes = (data_time_et - market_open_et).total_seconds() / 60
+            # 3. index 계산을 위해 개장 시간도 UTC로 변환
+            market_open_utc = market_open_et.astimezone(UTC_TZ)
+            
+            # 4. UTC 시간끼리 비교하여 정확한 인덱스 계산
+            data_time_utc = data_time_utc.replace(second=0, microsecond=0)
+            market_open_utc = market_open_utc.replace(second=0, microsecond=0)
+
+            time_diff_minutes = (data_time_utc - market_open_utc).total_seconds() / 60
             fixed_index = int(time_diff_minutes / 5)
 
             new_record = {
@@ -76,30 +91,39 @@ def lambda_handler(event, context):
             }
             log_context['calculated_index'] = fixed_index
 
-            # 4. 인덱스 값에 따라 로직 분기
-            if fixed_index == 0:
-                # 데이터 날짜를 기준으로 7일 뒤의 Unix 타임스탬프 계산
-                start_of_day_et = US_EASTERN_TZ.localize(datetime.strptime(price_date_str, "%Y-%m-%d"))
-                expiry_time = start_of_day_et + timedelta(days=7)
-                ttl_timestamp = int(expiry_time.timestamp())
-                
-                item_to_create = {
-                    'tickerId': ticker_id,
-                    'priceDate': price_date_str,
-                    'maxLen': max_len,
-                    'priceDataList': [new_record],
-                    'ttl': ttl_timestamp
-                }
-                table.put_item(Item=item_to_create)
-                logger.info("Successfully CREATED new item for the day.", extra=log_context)
+            # --- ✅ 로직 통합: 하나의 UpdateItem으로 생성과 업데이트 모두 처리 ---
+            
+            # TTL 값은 최초 생성 시에만 설정되도록 if_not_exists 사용
+            start_of_day_et = US_EASTERN_TZ.localize(datetime.strptime(price_date_str, "%Y-%m-%d"))
+            expiry_time = start_of_day_et + timedelta(days=7)
+            ttl_timestamp = int(expiry_time.timestamp())
 
-            else:
-                table.update_item(
-                    Key={'tickerId': ticker_id, 'priceDate': price_date_str},
-                    UpdateExpression="SET priceDataList = list_append(priceDataList, :newData)",
-                    ExpressionAttributeValues={':newData': [new_record]}
-                )
-                logger.info("Successfully APPENDED data to existing item.", extra=log_context)
+            # UpdateExpression 정의
+            update_expression = (
+                "SET priceDataList = list_append(if_not_exists(priceDataList, :empty_list), :newData), "
+                "#ML = if_not_exists(#ML, :maxLenVal), "
+                "#T = if_not_exists(#T, :ttlVal)"
+            )
+
+            # ExpressionAttributeValues 정의
+            expression_values = {
+                ':newData': [new_record],
+                ':empty_list': [],
+                ':maxLenVal': max_len,
+                ':ttlVal': ttl_timestamp
+            }
+
+            table.update_item(
+                Key={'tickerId': ticker_id, 'priceDate': price_date_str},
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_values,
+                ExpressionAttributeNames={
+                    '#ML': 'maxLen',
+                    '#T': 'ttl'
+                }
+            )
+            
+            logger.info("Successfully CREATED or APPENDED data.", extra=log_context)
 
         except Exception:
             # 에러 발생 시, 예외 정보와 실패한 메시지 내용을 함께 기록

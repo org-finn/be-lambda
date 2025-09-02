@@ -10,6 +10,8 @@ import time
 import psycopg2
 from psycopg2.extras import execute_batch
 from polygon import RESTClient
+import pytz
+import exchange_calendars as xcals
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -25,6 +27,8 @@ SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 sqs_client = boto3.client('sqs')
 polygon_client = RESTClient(POLYGON_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+US_CALENDAR = xcals.get_calendar("XNYS") # ✅ 미국 증시 캘린더
+US_EASTERN_TZ = pytz.timezone("America/New_York") # ✅ 미국 동부 타임존
 
 def get_tickers_from_supabase():
     """Supabase에서 처리할 모든 티커 목록을 조회합니다."""
@@ -90,6 +94,17 @@ def process_ticker(ticker_info):
 def lambda_handler(event, context):
     logger.info("Lambda handler started: Fetching stock prices to send to SQS.")
     try:
+        # 0. 휴장일 확인 로직
+        # 람다 실행 시점의 미국 동부 시간 기준 '어제' 날짜 계산
+        now_et = datetime.now(US_EASTERN_TZ)
+        previous_day = now_et - timedelta(days=1)
+        previous_day_str = previous_day.strftime('%Y-%m-%d')
+
+        # 어제가 거래일(session)이 아니었는지 확인
+        if not US_CALENDAR.is_session(previous_day_str):
+            logger.warning(f"Skipping execution because the previous day ({previous_day_str}) was a market holiday.")
+            return {'statusCode': 200, 'body': f'Skipped: {previous_day_str} was a holiday.'}
+        
         # 1. 처리할 티커 목록 조회
         tickers = get_tickers_from_supabase()
         if not tickers:

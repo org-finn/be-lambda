@@ -91,7 +91,7 @@ def lambda_handler(event, context):
         logger.info("Will fetch article %s ~ %s of UTC", published_utc_gte, 
                     current_utc_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
         
-        prediction_date = datetime.now(pytz.timezone('US/Eastern')) \
+        prediction_date = datetime.now(timezone.utc) \
             .replace(second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
         
         # Supabase에서 티커 정보를 미리 가져와 빠른 조회를 위한 맵과 set 생성
@@ -147,67 +147,60 @@ def lambda_handler(event, context):
         # 3. 수집된 뉴스를 SQS 큐로 전송
         if not articles_to_send:
             logger.info("No new articles to process.")
-            return {'statusCode': 200, 'body': 'No new articles found.'}
-
-        
-        # 4. SQS로 메시지 전송
-
-        # 4-1. 아티클 메시지 전송
-        # SQS로 보낼 총 기사 수 계산
-        logger.info("Sending %d unique articles to SQS queue...",
-            len(articles_to_send))
-        
-        entries_to_send = []
-        for article in articles_to_send:
-            message_body = {
-                'article': article,
-                'is_market_open': is_market_open,
-                'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
-            }
-            distinct_id = article['distinct_id']
-            entries_to_send.append({
-                'Id': distinct_id.replace('.', '-'), # SQS ID에 '.' 허용 안됨
-                'MessageBody': json.dumps(message_body)
-            })
-        
-        # 배치 단위 삽입 (최대 10개 그룹씩)
-        for i in range(0, len(entries_to_send), 10):
-            batch = entries_to_send[i:i+10]
-            sqs_client.send_message_batch(QueueUrl=ARTICLE_SQS_QUEUE_URL, Entries=batch)
-        
-        logger.info("✅ Successfully sent all articles to SQS.")
-        
-        # 4-2. 예측 메시지 전송(정규장일때만)
-        if not is_market_open:
-            logger.info("Market is closed so do not sent prediction data to queue.")
         else:
-            if sentiment_stats:
-                logger.info("Sending %d sentiment stats to SQS queue...", 
-                    len(sentiment_stats))
-                
-                stats_entries_to_send = []
-                for ticker_code, counts in sentiment_stats.items():
-                    ticker_info = ticker_info_map.get(ticker_code, {})
-                    message_body = {
-                        'ticker_code': ticker_code,
-                        'ticker_id': ticker_info.get('id'),
-                        'short_company_name' : ticker_info.get('name'),
-                        'positive_article_count': counts['positive'],
-                        'negative_article_count': counts['negative'],
-                        'neutral_article_count': counts['neutral'],
-                        'prediction_date': prediction_date.isoformat(),
-                        'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
-                    }
-                    stats_entries_to_send.append({
-                        'Id': ticker_code.replace('.', '-'),
-                        'MessageBody': json.dumps(message_body)
-                    })
+            # 3-1. 아티클 메시지 전송
+            # SQS로 보낼 총 기사 수 계산
+            logger.info("Sending %d unique articles to SQS queue...",
+                len(articles_to_send))
+            
+            entries_to_send = []
+            for article in articles_to_send:
+                message_body = {
+                    'article': article,
+                    'is_market_open': is_market_open,
+                    'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
+                }
+                distinct_id = article['distinct_id']
+                entries_to_send.append({
+                    'Id': distinct_id.replace('.', '-'), # SQS ID에 '.' 허용 안됨
+                    'MessageBody': json.dumps(message_body)
+                })
+            
+            # 배치 단위 삽입 (최대 10개 그룹씩)
+            for i in range(0, len(entries_to_send), 10):
+                batch = entries_to_send[i:i+10]
+                sqs_client.send_message_batch(QueueUrl=ARTICLE_SQS_QUEUE_URL, Entries=batch)
+            
+            logger.info("✅ Successfully sent all articles to SQS.")
+            
+        # 3-2. 예측 메시지 전송(정규장 외에도 다음 정규장을 위해 예측 계속 수행)
+        if sentiment_stats:
+            logger.info("Sending %d sentiment stats to SQS queue...", 
+                len(sentiment_stats))
+            
+            stats_entries_to_send = []
+            for ticker_code, counts in sentiment_stats.items():
+                ticker_info = ticker_info_map.get(ticker_code, {})
+                message_body = {
+                    'ticker_code': ticker_code,
+                    'ticker_id': ticker_info.get('id'),
+                    'short_company_name' : ticker_info.get('name'),
+                    'positive_article_count': counts['positive'],
+                    'negative_article_count': counts['negative'],
+                    'neutral_article_count': counts['neutral'],
+                    'prediction_date': prediction_date.isoformat(),
+                    'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
+                }
+                stats_entries_to_send.append({
+                    'Id': ticker_code.replace('.', '-'),
+                    'MessageBody': json.dumps(message_body)
+                })
 
-                # 통계 메시지 일괄 전송
-                for i in range(0, len(stats_entries_to_send), 10):
-                    batch = stats_entries_to_send[i:i+10]
-                    sqs_client.send_message_batch(QueueUrl=PREDICTION_SQS_QUEUE_URL, Entries=batch)
-                logger.info("✅ Successfully sent all sentiment stats to SQS.")
+            # 통계 메시지 일괄 전송
+            for i in range(0, len(stats_entries_to_send), 10):
+                batch = stats_entries_to_send[i:i+10]
+                sqs_client.send_message_batch(QueueUrl=PREDICTION_SQS_QUEUE_URL, Entries=batch)
+            logger.info("✅ Successfully sent all sentiment stats to SQS.")
 
     except Exception as e:
         logger.exception("A critical error occurred in the lambda handler.")
@@ -215,5 +208,5 @@ def lambda_handler(event, context):
 
     return {
         'statusCode': 200,
-        'body': f'Successfully processed and sent {len(entries_to_send)} news to SQS.'
+        'body': f'Successfully processed and sent news/predictions to SQS.'
     }

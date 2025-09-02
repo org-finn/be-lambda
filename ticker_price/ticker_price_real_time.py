@@ -3,11 +3,10 @@ import os
 import boto3
 import logging
 from supabase import create_client, Client
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone
 import requests
 import json
 import time
-import pytz
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -28,7 +27,6 @@ ssm_client = boto3.client('ssm')
 KIS_TOKEN_PARAMETER_NAME = os.environ.get('KIS_TOKEN_PARAMETER_NAME')
 
 MARKET_STATUS_PARAMETER_NAME = os.environ.get('MARKET_STATUS_PARAMETER_NAME')
-MARKET_TIMEZONE = 'US/Eastern' # Nasdaq/NYSE 시장 기준 시간대
 
 
 def get_token_from_parameter_store():
@@ -212,7 +210,7 @@ def send_message_to_sqs(ticker_id, price_date, price_data):
 def lambda_handler(event, context):
     logger.info("Lambda handler started.")
     try:
-        market_time = datetime.now(pytz.timezone(MARKET_TIMEZONE))
+        market_time = datetime.now(timezone.utc)
         if market_time.minute % 30 == 0:
             check_and_update_market_status()
         
@@ -222,9 +220,9 @@ def lambda_handler(event, context):
         
         logger.info("Market is OPEN. Fetching stock prices...")
         
-        now_et = datetime.now(pytz.timezone(MARKET_TIMEZONE))
+        now_et = datetime.now(timezone.utc)
         price_date_str = now_et.strftime('%Y-%m-%d')
-        hours_str = now_et.strftime('%H:%M:%S(EST)')
+        hours_str = now_et.strftime('%H:%M:00')
 
         access_token = get_access_token(KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL)
         if not access_token:
@@ -252,7 +250,7 @@ def lambda_handler(event, context):
                 
                 # SQS로 보낼 데이터 구성
                 payload = {
-                    "price": float(current_price), # 소비자가 숫자로 처리하기 쉽도록 float으로 변환
+                    "price": round(float(current_price), 4), # 소수점 4자리까지만 허용
                     "hours": hours_str
                 }
                 

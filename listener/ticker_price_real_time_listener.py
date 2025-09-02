@@ -29,6 +29,8 @@ def get_market_info(target_date_str: str) -> dict | None:
     market_open_et = schedule.market_open.astimezone(US_EASTERN_TZ)
     market_close_et = schedule.market_close.astimezone(US_EASTERN_TZ)
     
+    market_open_et = market_open_et.replace(second=0, microsecond=0)
+    
     duration_minutes = (market_close_et - market_open_et).total_seconds() / 60
     max_len = int(duration_minutes / 5)
 
@@ -61,6 +63,9 @@ def lambda_handler(event, context):
             # 3. 고정 인덱스 계산
             hours_str = new_price_data['hours'].split('(')[0]
             data_time_et = US_EASTERN_TZ.localize(datetime.strptime(f"{price_date_str} {hours_str}", "%Y-%m-%d %H:%M:%S"))
+            
+            data_time_et = data_time_et.replace(second=0, microsecond=0)
+            
             time_diff_minutes = (data_time_et - market_open_et).total_seconds() / 60
             fixed_index = int(time_diff_minutes / 5)
 

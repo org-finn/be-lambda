@@ -22,8 +22,8 @@ KIS_BASE_URL = os.environ.get('KIS_BASE_URL')
 KIS_APP_KEY = os.environ.get('KIS_APP_KEY')
 KIS_APP_SECRET = os.environ.get('KIS_APP_SECRET')
 
-S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
-
+SQS_QUEUE_URL = os.environ.get('SQS_QUEUE_URL')
+sqs_client = boto3.client('sqs')
 ssm_client = boto3.client('ssm')
 KIS_TOKEN_PARAMETER_NAME = os.environ.get('KIS_TOKEN_PARAMETER_NAME')
 
@@ -177,106 +177,100 @@ def check_and_update_market_status():
             Overwrite=True
         )
 
-def fetch_stock_data_if_market_open():
-    """Parameter Store의 시장 상태를 확인하고, 열려있을 경우에만 주가 수집 로직을 실행합니다."""
+def is_market_open():
     try:
-        # 현재 '팻말' 상태를 Parameter Store에서 읽어오기
         status_param = ssm_client.get_parameter(Name=MARKET_STATUS_PARAMETER_NAME)
-        current_market_status = status_param['Parameter']['Value']
-        
-        if current_market_status == 'OPEN':
-            return True
-        else:
-            return False
-        
+        return status_param['Parameter']['Value'] == 'OPEN'
     except Exception as e:
-        logger.exception(f"An error occurred during stock price collection logic: {e}")
+        logger.exception(f"Could not determine market status: {e}")
+        return False
 
 
-def save_data_in_s3(current_date, ticker_id, s3_payload):
-    """S3에 데이터를 저장하는 함수. 실패 시 예외를 발생시킵니다."""
+def send_message_to_sqs(ticker_id, price_date, price_data):
+    """주가 데이터를 SQS FIFO 큐로 전송하는 함수"""
     try:
-        s3_client = boto3.client('s3')
-        now_et = datetime.now(pytz.timezone(MARKET_TIMEZONE))
-        s3_key = f"{now_et.strftime('%Y/%m/%d')}/{ticker_id}/{now_et.strftime('%H-%M-%S')}_stock_prices.json"
+        message_body = json.dumps({
+            "tickerId": ticker_id,
+            "priceDate": price_date,
+            "priceData": price_data
+        })
         
-        s3_client.put_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=s3_key,
-            Body=json.dumps(s3_payload, indent=2),
-            ContentType='application/json'
+        # 중복 방지를 위한 ID 생성 (tickerId와 현재 시간을 조합)
+        deduplication_id = f"{ticker_id}-{int(time.time())}"
+
+        sqs_client.send_message(
+            QueueUrl=SQS_QUEUE_URL,
+            MessageBody=message_body,
+            MessageGroupId=ticker_id,  # ✅ 같은 종목은 같은 그룹 ID를 갖도록 하여 순서 보장
+            MessageDeduplicationId=deduplication_id
         )
-        logger.info("Successfully saved data to S3 bucket %s at key %s", S3_BUCKET_NAME, s3_key)
+        logger.info(f"Successfully sent message to SQS for ticker: {ticker_id}")
     except Exception as e:
-        logger.exception("Failed to save data to S3.")
-        # S3 저장 실패는 치명적이므로, 예외를 다시 발생시켜 재시도를 유도합니다.
-        raise e
+        logger.exception(f"Failed to send message to SQS for ticker: {ticker_id}")
+        raise e # 에러 발생 시 재시도를 위해 예외를 다시 발생
 
 def lambda_handler(event, context):
     logger.info("Lambda handler started.")
-    try:    
-        # 미국 동부 시간 기준 현재 시간이 30분 간격일 때만 시장 상태를 체크
+    try:
         market_time = datetime.now(pytz.timezone(MARKET_TIMEZONE))
         if market_time.minute % 30 == 0:
             check_and_update_market_status()
         
-        if not fetch_stock_data_if_market_open(): # 정규장이 열려있지 않으면 함수 즉시 종료
-            logger.info("Market is CLOSED. Skipping stock price collection and close function.")
+        if not is_market_open():
+            logger.info("Market is CLOSED. Skipping stock price collection.")
             return {'statusCode': 200, 'body': 'Market is closed.'}
         
         logger.info("Market is OPEN. Fetching stock prices...")
         
-        current_date = datetime.now(pytz.timezone(MARKET_TIMEZONE)).isoformat()
+        now_et = datetime.now(pytz.timezone(MARKET_TIMEZONE))
+        price_date_str = now_et.strftime('%Y-%m-%d')
+        hours_str = now_et.strftime('%H:%M:%S(EST)')
+
         access_token = get_access_token(KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL)
         if not access_token:
-            raise Exception("Failed to get a valid access token. Aborting.")
+            raise Exception("Failed to get a valid access token.")
         
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         response = supabase.table('ticker').select('code, id, exchange_code').execute()
         
         if not response.data:
-            raise Exception("No ticker data found from Supabase. Aborting.")
+            raise Exception("No ticker data found from Supabase.")
             
-        tickers = [(item['code'], item['id'], item['exchange_code']) for item in response.data]
-        logger.info("Successfully fetched %d tickers to process.", len(tickers))
+        tickers = response.data
+        logger.info(f"Successfully fetched {len(tickers)} tickers to process.")
         
-        s3_payload = []
         processed_count = 0
-        
-        for ticker_code, ticker_id, exchange_code in tickers:
+        for item in tickers:
+            ticker_code = item['code']
+            ticker_id = item['id']
+            exchange_code = item['exchange_code']
 
-            # NYSE -> NYS, NASD -> NAS
             price_data = get_overseas_stock_price(access_token, KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, ticker_code, exchange_code[:-1])
             
             if price_data and price_data.get('output1'):
-                output = price_data['output1']
-                current_price = output.get('last')
-                logger.info("Processed %s: Current price is $%s", ticker_code, current_price)
+                current_price = price_data['output1'].get('last')
                 
-                s3_payload.append({
-                    "tickerId" : ticker_id,
-                    "tickerCode" : ticker_code,
-                    "price" : current_price,
-                    "priceDate" : current_date
-                })
+                # SQS로 보낼 데이터 구성
+                payload = {
+                    "price": float(current_price), # 소비자가 숫자로 처리하기 쉽도록 float으로 변환
+                    "hours": hours_str
+                }
+                
+                # SQS 메시지 전송
+                send_message_to_sqs(ticker_id, price_date_str, payload)
+                
                 processed_count += 1
             else:
-                logger.warning("Could not retrieve price data for %s.", ticker_code)
+                logger.warning(f"Could not retrieve price data for {ticker_code}.")
 
-        # 🚨 처리된 데이터가 하나도 없을 경우
         if processed_count == 0 and len(tickers) > 0:
-            raise Exception(f"Processed 0 tickers out of {len(tickers)}. Retrying might solve the issue.")
+            raise Exception(f"Processed 0 tickers out of {len(tickers)}.")
         
-        logger.info("Successfully processed %d out of %d tickers.", processed_count, len(tickers))
-        save_data_in_s3(current_date, s3_payload)
-
-        logger.info("Lambda handler finished.")
+        logger.info(f"Successfully processed and sent {processed_count} messages to SQS.")
         return {
             'statusCode': 200,
             'body': f'Successfully processed {processed_count} tickers.'
         }
     except Exception as e:
-            # 핸들러의 메인 로직에서 발생하는 모든 예외를 여기서 잡아 로깅합니다.
-            logger.exception("A critical error occurred in the lambda handler.")
-            # 🚨 예외를 다시 발생시켜 Lambda 실행을 '실패'로 AWS에 알립니다.
-            raise e
+        logger.exception("A critical error occurred in the lambda handler.")
+        raise e

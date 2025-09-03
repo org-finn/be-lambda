@@ -97,10 +97,9 @@ def lambda_handler(event, context):
         # 0. 휴장일 확인 로직
         # 람다 실행 시점의 미국 동부 시간 기준 '어제' 날짜 계산
         now_et = datetime.now(US_EASTERN_TZ)
-        previous_day = now_et - timedelta(days=1)
-        previous_day_str = previous_day.strftime('%Y-%m-%d')
+        previous_day_str = now_et.strftime('%Y-%m-%d')
 
-        # 어제가 거래일(session)이 아니었는지 확인
+        # 어제(동부 시간 기준 오늘)가 거래일(session)이 아니었는지 확인
         if not US_CALENDAR.is_session(previous_day_str):
             logger.warning(f"Skipping execution because the previous day ({previous_day_str}) was a market holiday.")
             return {'statusCode': 200, 'body': f'Skipped: {previous_day_str} was a holiday.'}

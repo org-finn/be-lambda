@@ -113,8 +113,8 @@ def lambda_handler(event, context):
         if data_to_insert:
             insert_query = """
                 INSERT INTO ticker_prices (
-                    price_date, open, high, low, close, volume, change_rate, ticker_code, ticker_id, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    id, price_date, open, high, low, close, volume, change_rate, ticker_code, ticker_id, created_at
+                ) VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (ticker_id, price_date) DO UPDATE SET
                     open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                     close = EXCLUDED.close, volume = EXCLUDED.volume, change_rate = EXCLUDED.change_rate;

@@ -52,12 +52,19 @@ def get_market_status():
 def fetch_articles(published_utc_gte, ticker_code, limit):
     """Polygon API를 호출하여 뉴스를 가져옵니다."""
     try:
-        response = polygon_client.list_ticker_news(
-            ticker=ticker_code,
-            limit=limit,
-            order='asc',
-            published_utc_gte=published_utc_gte
-        )
+        if ticker_code:
+            response = polygon_client.list_ticker_news(
+                ticker=ticker_code,
+                limit=limit,
+                order='asc',
+                published_utc_gte=published_utc_gte
+            )
+        else:
+            response = polygon_client.list_ticker_news(
+                limit=limit,
+                order='asc',
+                published_utc_gte=published_utc_gte
+            )
         if response:
             return response
     except Exception as e:

@@ -36,7 +36,7 @@ def get_market_info(target_date_str: str) -> dict | None:
     market_open_et = market_open_et.replace(second=0, microsecond=0)
     
     duration_minutes = (market_close_et - market_open_et).total_seconds() / 60
-    max_len = int(duration_minutes / 5)
+    max_len = int(duration_minutes / 5) + 1 # (시작 시간 ~ 끝 시간 차) + 1
 
     # ✅ 변경점: ET 개장 시간 반환
     return {"open_time_et": market_open_et, "max_len": max_len}

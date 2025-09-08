@@ -34,17 +34,7 @@ def lambda_handler(event, context):
         today_utc = datetime.now(UTC_TZ)
         today_utc_str = today_utc.strftime('%Y-%m-%d')
 
-        # 2. 새로운 날이 거래일인지 확인
-        if not US_CALENDAR.is_session(today_utc_str):
-            logger.warning(f"Skipping initialization. {today_utc_str} is a market holiday.")
-            return {
-                'statusCode': 200,
-                'body': json.dumps(f'Skipped: {today_utc_str} is a holiday.')
-            }
-
-        logger.info(f"{today_utc_str} is a trading day. Proceeding with data initialization.")
-
-        # 3. 데이터베이스 연결
+        # 2. 데이터베이스 연결
         conn = psycopg2.connect(
             host=DB_HOST,
             dbname=DB_NAME,
@@ -54,7 +44,7 @@ def lambda_handler(event, context):
         )
         cur = conn.cursor()
         
-        # 4. 초기값 삽입 쿼리 실행
+        # 3. 초기값 삽입 쿼리 실행
         # 해당 날짜에 데이터가 없는 ticker에 대해서만 초기값을 생성
         sql_query = """
             INSERT INTO predictions (
@@ -76,7 +66,7 @@ def lambda_handler(event, context):
             );
         """
         
-        # 쿼리 파라미터로 오늘 날짜를 전달
+        # 4. 쿼리 파라미터로 오늘 날짜를 전달
         params = (today_utc_str, today_utc_str, today_utc_str)
         cur.execute(sql_query, params)
         

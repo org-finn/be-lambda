@@ -128,7 +128,7 @@ def lambda_handler(event, context):
             tickers = []
             for ticker_code in article.tickers:
                  if ticker_code in supported_tickers_set: # 우리 서비스에서 지원하는 티커여야함
-                     tickers.append(ticker_code)
+                     tickers.append(ticker_info_map.get(ticker_code, {}).get('name'))
             if tickers:
                 payload['tickers'] = tickers
             else:

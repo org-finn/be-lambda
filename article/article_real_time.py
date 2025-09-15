@@ -20,9 +20,34 @@ SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
 # 클라이언트는 핸들러 함수 밖에 선언하여 재사용 (성능 최적화)
 sqs_client = boto3.client('sqs')
+ssm_client = boto3.client('ssm')
 polygon_client = RESTClient(POLYGON_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def get_tickers_from_parameter_store():
+    """Parameter Store에서 저장된 티커 목록을 가져옵니다."""
+    logger.info("Fetching tickers from Parameter Store.")
+    
+    try:
+        param = ssm_client.get_parameter(Name='/articker/tickers')
+        
+        # 저장된 JSON 문자열을 파싱
+        cached_data = json.loads(param['Parameter']['Value'])
+        all_tickers = cached_data.get('tickers', [])
+
+        filtered_tickers = [
+            (item[0], item[1], item[2]) for item in all_tickers
+        ]
+        
+        return filtered_tickers
+    
+    except ssm_client.exceptions.ParameterNotFound:
+        logger.info("No ticker cache found in Parameter Store.")
+        return None
+    except Exception as e:
+        logger.exception("Failed to get tickers from Parameter Store.")
+        return None
+    
 def get_tickers_from_supabase():
     """Supabase에서 처리할 모든 티커 목록을 조회합니다."""
     logger.info("Fetching tickers from Supabase.")
@@ -101,10 +126,11 @@ def lambda_handler(event, context):
         prediction_date = datetime.now(timezone.utc) \
             .replace(second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
         
-        # Supabase에서 티커 정보를 미리 가져와 빠른 조회를 위한 맵과 set 생성
-        all_tickers_from_db = get_tickers_from_supabase()
-        ticker_info_map = { ticker[1]: {'id': ticker[0], 'name': ticker[2]} for ticker in all_tickers_from_db }
-        supported_tickers_set = set(ticker[1] for ticker in all_tickers_from_db)
+        tickers = get_tickers_from_parameter_store() # 선 파라미터 조회
+        if tickers is None:
+            tickers = get_tickers_from_supabase() # 안전장치로 db에서 조회
+        ticker_info_map = { ticker[1]: {'id': ticker[0], 'name': ticker[2]} for ticker in tickers }
+        supported_tickers_set = set(ticker[1] for ticker in tickers)
         
         # 1. 전체 최신 뉴스 수집
         logger.info("Fetching general articles...")

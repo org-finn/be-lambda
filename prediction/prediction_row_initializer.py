@@ -53,21 +53,31 @@ def lambda_handler(event, context):
                 ticker_code, short_company_name, ticker_id, created_at
             )
             SELECT
-                gen_random_uuid(), %s::TIMESTAMPTZ, 0, 0, 0, 0, '관망', 50,
-                t.code, t.short_company_name, t.id, NOW() AT TIME ZONE 'Asia/Seoul'
+                gen_random_uuid(),
+                %s::TIMESTAMPTZ,
+                0,
+                0,
+                0,
+                COALESCE(lp.sentiment, 0), 
+                COALESCE(lp.strategy, '관망'),
+                COALESCE(lp.score, 50),
+                t.code,
+                t.short_company_name,
+                t.id,
+                NOW() AT TIME ZONE 'Asia/Seoul'
             FROM
                 ticker t
-            WHERE NOT EXISTS (
-                SELECT 1
+            LEFT JOIN LATERAL (
+                SELECT sentiment, strategy, score
                 FROM predictions p
                 WHERE p.ticker_id = t.id
-                  AND p.prediction_date >= %s::date
-                  AND p.prediction_date < (%s::date + INTERVAL '1 day')
-            );
+                ORDER BY p.prediction_date DESC
+                LIMIT 1
+            ) lp ON true;
         """
         
         # 4. 쿼리 파라미터로 오늘 날짜를 전달
-        params = (today_utc_str, today_utc_str, today_utc_str)
+        params = (today_utc_str,)
         cur.execute(sql_query, params)
         
         # 삽입된 행의 수 확인

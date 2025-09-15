@@ -25,14 +25,40 @@ SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
 sqs_client = boto3.client('sqs')
+ssm_client = boto3.client('ssm')
 polygon_client = RESTClient(POLYGON_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 US_CALENDAR = xcals.get_calendar("XNYS") # ✅ 미국 증시 캘린더
 US_EASTERN_TZ = pytz.timezone("America/New_York") # ✅ 미국 동부 타임존
 
+
+def get_tickers_from_parameter_store():
+    """Parameter Store에서 저장된 티커 목록을 가져옵니다."""
+    logger.info("Fetching tickers from Parameter Store.")
+    try:
+        param = ssm_client.get_parameter(Name='/articker/tickers')
+        
+        # 저장된 JSON 문자열을 파싱
+        cached_data = json.loads(param['Parameter']['Value'])
+        all_tickers = cached_data.get('tickers', [])
+
+        filtered_tickers = [
+            (item[0], item[1]) for item in all_tickers
+        ]
+        
+        return filtered_tickers
+    
+    except ssm_client.exceptions.ParameterNotFound:
+        logger.info("No ticker cache found in Parameter Store.")
+        return None
+    except Exception as e:
+        logger.exception("Failed to get tickers from Parameter Store.")
+        return None
+    
 def get_tickers_from_supabase():
     """Supabase에서 처리할 모든 티커 목록을 조회합니다."""
     logger.info("Fetching tickers from Supabase.")
+    
     try:
         response = supabase.table('ticker').select('id, code').execute()
         if response.data:
@@ -67,7 +93,8 @@ def fetch_previous_day_data(ticker_code):
 
 def process_ticker(ticker_info):
     """단일 티커 데이터를 가져와 SQS 메시지 형식으로 가공합니다."""
-    ticker_id, ticker_code = ticker_info
+    ticker_id = ticker_info[0]
+    ticker_code = ticker_info[1]
     result = fetch_previous_day_data(ticker_code)
     
     if result:
@@ -105,7 +132,9 @@ def lambda_handler(event, context):
             return {'statusCode': 200, 'body': f'Skipped: {previous_day_str} was a holiday.'}
         
         # 1. 처리할 티커 목록 조회
-        tickers = get_tickers_from_supabase()
+        tickers = get_tickers_from_parameter_store() # 선 파라미터 조회
+        if tickers is None:
+            tickers = get_tickers_from_supabase() # 안전장치로 db에서 조회
         if not tickers:
             return {'statusCode': 200, 'body': 'No tickers to process.'}
             

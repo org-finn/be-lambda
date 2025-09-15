@@ -16,6 +16,7 @@ POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY')
 # 티커 조회 용도로 사용
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 KIS_BASE_URL = os.environ.get('KIS_BASE_URL')
 KIS_APP_KEY = os.environ.get('KIS_APP_KEY')
@@ -29,6 +30,48 @@ KIS_TOKEN_PARAMETER_NAME = os.environ.get('KIS_TOKEN_PARAMETER_NAME')
 MARKET_STATUS_PARAMETER_NAME = os.environ.get('MARKET_STATUS_PARAMETER_NAME')
 
 
+def get_tickers_from_parameter_store():
+    """Parameter Store에서 저장된 티커 목록을 가져옵니다."""
+    logger.info("Fetching tickers from Parameter Store.")
+    try:
+        param = ssm_client.get_parameter(Name='/articker/tickers')
+        
+        # 저장된 JSON 문자열을 파싱
+        cached_data = json.loads(param['Parameter']['Value'])
+        all_tickers = cached_data.get('tickers', [])
+
+        filtered_tickers = [
+            (item[0], item[1], item[3]) for item in all_tickers
+        ]
+        
+        return filtered_tickers
+    
+    except ssm_client.exceptions.ParameterNotFound:
+        logger.info("No ticker cache found in Parameter Store.")
+        return None
+    except Exception as e:
+        logger.exception("Failed to get tickers from Parameter Store.")
+        return None
+
+def get_tickers_from_supabase():
+    """Supabase에서 처리할 모든 티커 목록을 조회합니다."""
+    logger.info("Fetching tickers from Supabase.")
+    
+    try:
+        response = supabase.table('ticker').select('code, id, exchange_code').execute()
+        if response.data:
+            tickers = [(item['id'], item['code'], item['exchange_code']) for item in response.data]
+            logger.info("Found %d tickers to process.", len(tickers))
+            return tickers
+        else:
+            # 데이터가 없는 것은 재시도할 필요가 없는 정상 상황일 수 있음
+            logger.warning("No tickers found from Supabase.")
+            return []
+    except Exception as e:
+        # DB 연결 실패 등은 재시도가 필요한 오류이므로 예외 발생
+        logger.exception("Failed to fetch tickers from Supabase.")
+        raise e
+    
 def get_token_from_parameter_store():
     """Parameter Store에서 토큰 객체를 가져오는 함수"""
     try:
@@ -228,20 +271,16 @@ def lambda_handler(event, context):
         if not access_token:
             raise Exception("Failed to get a valid access token.")
         
-        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        response = supabase.table('ticker').select('code, id, exchange_code').execute()
-        
-        if not response.data:
-            raise Exception("No ticker data found from Supabase.")
-            
-        tickers = response.data
+        tickers = get_tickers_from_parameter_store() # 선 파라미터 조회
+        if tickers is None:    
+            tickers = get_tickers_from_supabase()
         logger.info(f"Successfully fetched {len(tickers)} tickers to process.")
         
         processed_count = 0
         for item in tickers:
-            ticker_code = item['code']
-            ticker_id = item['id']
-            exchange_code = item['exchange_code']
+            ticker_id = item[0]
+            ticker_code = item[1]
+            exchange_code = item[2]
 
             price_data = get_overseas_stock_price(access_token, KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, ticker_code, exchange_code[:-1])
             

@@ -217,14 +217,15 @@ def lambda_handler(event, context):
             for ticker_code, counts in sentiment_stats.items():
                 ticker_info = ticker_info_map.get(ticker_code, {})
                 message_body = {
-                    'ticker_code': ticker_code,
-                    'ticker_id': ticker_info.get('id'),
-                    'short_company_name' : ticker_info.get('name'),
-                    'positive_article_count': counts['positive'],
-                    'negative_article_count': counts['negative'],
-                    'neutral_article_count': counts['neutral'],
-                    'prediction_date': prediction_date.isoformat(),
-                    'created_at': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
+                    'tickerId': ticker_info.get('id'),
+                    'type' : 'article',
+                    'payload' : {
+                        'positiveArticleCount': counts['positive'],
+                        'negativeArticleCount': counts['negative'],
+                        'neutralArticleCount': counts['neutral'],
+                        'predictionDate': prediction_date.isoformat(),
+                        'createdAt': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
+                    }
                 }
                 stats_entries_to_send.append({
                     'Id': ticker_code.replace('.', '-'),

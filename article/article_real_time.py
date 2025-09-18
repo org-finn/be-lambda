@@ -124,7 +124,7 @@ def lambda_handler(event, context):
                     current_utc_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
         
         prediction_date = datetime.now(timezone.utc) \
-            .replace(second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
+            .replace(hour=0, minute=0, second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
         
         tickers = get_tickers_from_parameter_store() # 선 파라미터 조회
         if tickers is None:

@@ -6,9 +6,7 @@ import pytz
 from datetime import datetime, timezone
 from supabase import create_client, Client
 from polygon import RESTClient
-from dotenv import load_dotenv
 
-# load_dotenv()
 # --- 초기 설정 ---
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

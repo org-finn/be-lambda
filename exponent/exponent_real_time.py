@@ -373,8 +373,8 @@ def lambda_handler(event, context):
         
         logger.info(f"Successfully processed and sent {processed_count} price messages to SQS.")
         
-        # 현재 분(minute)이 30으로 나누어 떨어질때만 예측 메시지를 전송(즉, 0분 또는 30분인지) + 첫번째 데이터가 아닐때에만
-        if market_time.minute % 30 == 0 and not is_first_data(market_time.strftime("%Y-%m-%d %H:%M:00"), price_date_str):
+        # 현재 분(minute)이 30으로 나누어 떨어질때 혹은 오차를 고려하여 나머지가 1일때, 예측 메시지를 전송(즉, 0/1분 또는 30/31분인지) + 첫번째 데이터가 아닐때에만
+        if market_time.minute % 30 <= 1 and not is_first_data(market_time.strftime("%Y-%m-%d %H:%M:00"), price_date_str):
             logger.info("Start to send prediction message.")
             
             prediction_date = datetime.now(timezone.utc) \

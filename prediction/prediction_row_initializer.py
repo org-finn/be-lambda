@@ -182,7 +182,7 @@ def lambda_handler(event, context):
 
     try:
         prediction_date = datetime.now(timezone.utc) \
-            .replace(minute=0, second=0, microsecond=0) # 0분0초 고정
+            .replace(hour=0,minute=0, second=0, microsecond=0) # 00:00:00 고정
         
         tickers = get_tickers_from_parameter_store() # 선 파라미터 조회
         if tickers is None:

@@ -279,7 +279,7 @@ def send_exponent_price_message_to_sqs(exponent_id, price_date, price_data):
         })
         
         # 중복 방지를 위한 ID 생성 (exponentId와 현재 시간을 조합)
-        deduplication_id = f"{exponent_id}-{int(time.time())}"
+        deduplication_id = f"{exponent_id}-{price_date}"
 
         sqs_client.send_message(
             QueueUrl=EXPONENT_SQS_QUEUE_URL,
@@ -298,9 +298,11 @@ def send_exponent_prediction_message_to_sqs(price_date, prediction_date, exponen
         message_body = json.dumps({
             'tickerId': wildcard_ticker_id,
             'type' : 'exponent',
-            'payload' : exponents,
-            'predictionDate' : prediction_date.isoformat(),
-            'priceDate' : price_date
+            'payload' : {
+                'exponents' : exponents,
+                'priceDate' : price_date,
+                'predictionDate' : prediction_date.isoformat()
+            }
         })
     
         sqs_client.send_message(QueueUrl=PREDICTION_SQS_QUEUE_URL,
@@ -329,6 +331,7 @@ def lambda_handler(event, context):
         now_et = datetime.now(timezone.utc)
         price_date_str = now_et.strftime('%Y-%m-%d')
         hours_str = now_et.strftime('%H:%M:00')
+        price_date = now_et.strftime('%Y-%m-%dT%H:%M:00Z')
 
         access_token = get_access_token(KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL)
         if not access_token:
@@ -379,7 +382,7 @@ def lambda_handler(event, context):
             
             prediction_date = datetime.now(timezone.utc) \
                 .replace(hour=0, minute=0, second=0, microsecond=0) # 데이터 간 날짜 통일을 위해 사용
-            send_exponent_prediction_message_to_sqs(price_date_str, prediction_date, exponents)
+            send_exponent_prediction_message_to_sqs(price_date, prediction_date, exponents_to_prediction)
             
             logger.info(f"Successfully processed and sent {processed_count} prediction messages to SQS.")
         else:

@@ -27,7 +27,8 @@ def lambda_handler(event, context):
 
     # Spring Boot API로 보낼 헤더
     headers = {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'X-Request-Source': 'SQS-Pipeline'
     }
 
     success_count = 0

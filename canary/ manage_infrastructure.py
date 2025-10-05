@@ -44,7 +44,7 @@ def lambda_handler(event, context):
             AutoScalingGroupName=PROD_ASG_NAME,
             LaunchTemplate={
                 'LaunchTemplateId': LAUNCH_TEMPLATE_ID,
-                'Version': lt_version
+                'Version': str(lt_version)
             }
         )
         

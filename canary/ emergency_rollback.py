@@ -1,6 +1,7 @@
 import boto3
 import os
 
+SQS_RULE_ARN = os.environ['SQS_RULE_ARN']
 LISTENER_ARN = os.environ['LISTENER_ARN']
 LIVE_TG_ARN = os.environ['LIVE_TG_ARN']
 CANARY_TG_ARN = os.environ['CANARY_TG_ARN']
@@ -23,7 +24,16 @@ def lambda_handler(event, context):
             ]}
         }]
     )
-    print("Traffic successfully reverted to 100% live.")
+    print("Main Traffic successfully reverted to 100% live.")
+
+    print(f"Reverting SQS rule ({SQS_RULE_ARN}) to point to Production.")
+    elbv2.modify_rule(
+        RuleArn=SQS_RULE_ARN,
+        Actions=[{
+            'Type': 'forward',
+            'TargetGroupArn': LIVE_TG_ARN
+        }]
+    )
     
     # 2. 카나리 ASG의 '원하는 용량'을 0으로 설정하여 카나리 인스턴스 자동 종료
     print(f"Terminating canary instance by setting DesiredCapacity of {CANARY_ASG_NAME} to 0.")

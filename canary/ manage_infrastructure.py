@@ -1,12 +1,14 @@
 import boto3
 import os
 import json
+import base64
 
 # Boto3 클라이언트 초기화
 ec2 = boto3.client('ec2')
 autoscaling = boto3.client('autoscaling')
 
-LAUNCH_TEMPLATE_ID = os.environ.get('LAUNCH_TEMPLATE_ID')
+LIVE_LAUNCH_TEMPLATE_ID = os.environ['LIVE_LAUNCH_TEMPLATE_ID']
+CANARY_LAUNCH_TEMPLATE_ID = os.environ['CANARY_LAUNCH_TEMPLATE_ID']
 PROD_ASG_NAME = os.environ.get('PROD_ASG_NAME')
 CANARY_ASG_NAME = os.environ.get('CANARY_ASG_NAME')
 
@@ -28,7 +30,7 @@ def lambda_handler(event, context):
             AutoScalingGroupName=CANARY_ASG_NAME,
             DesiredCapacity=1,
             LaunchTemplate={
-                'LaunchTemplateId': LAUNCH_TEMPLATE_ID,
+                'LaunchTemplateId': CANARY_LAUNCH_TEMPLATE_ID,
                 'Version': str(lt_version)
             }
         )
@@ -36,17 +38,33 @@ def lambda_handler(event, context):
         
     # --- 2. 프로덕션 환경을 새 버전으로 업데이트하는 동작 ---
     elif action == 'PROMOTE_TO_PRODUCTION':
-        lt_version = event.get('launchTemplateVersion')
+        image_tag = event.get('imageTag')
 
-        print(f"Updating Production ASG ({PROD_ASG_NAME}) to Launch Template Version: {lt_version}")
-        # Production ASG가 새로운 버전의 시작 템플릿을 사용하도록 업데이트합니다.
-        autoscaling.update_auto_scaling_group(
-            AutoScalingGroupName=PROD_ASG_NAME,
-            LaunchTemplate={
-                'LaunchTemplateId': LAUNCH_TEMPLATE_ID,
-                'Version': str(lt_version)
-            }
+        # --- ⭐️ Live Template 업데이트 로직 ⭐️ ---
+        # 1. live-template의 최신 User Data를 가져옵니다.
+        latest_version = ec2.describe_launch_template_versions(LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID, Versions=['$Latest'])
+        base64_user_data = latest_version['LaunchTemplateVersions'][0]['LaunchTemplateData']['UserData']
+        decoded_user_data = base64.b64decode(base64_user_data).decode('utf-8')
+
+        # 2. 플레이스홀더를 새 이미지 태그로 교체합니다.
+        modified_user_data = decoded_user_data.replace("DOCKER_IMAGE_TAG_PLACEHOLDER", image_tag)
+        new_base64_user_data = base64.b64encode(modified_user_data.encode('utf-8')).decode('utf-8')
+
+        # 3. 수정된 User Data로 live-template의 새 버전을 생성합니다.
+        new_version_response = ec2.create_launch_template_version(
+            LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID,
+            SourceVersion='$Latest',
+            VersionDescription=f"Image tag {image_tag}",
+            LaunchTemplateData={'UserData': new_base64_user_data}
         )
+        new_version_number = new_version_response['LaunchTemplateVersion']['VersionNumber']
+
+        # 4. 방금 만든 새 버전을 live-template의 기본값으로 설정합니다.
+        ec2.modify_launch_template(
+            LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID,
+            DefaultVersion=str(new_version_number)
+        )
+        # ------------------------------------
         
         print(f"Starting Instance Refresh for Production ASG ({PROD_ASG_NAME})")
         # 인스턴스 새로고침을 시작하여, 구버전 인스턴스를 새 버전으로 교체합니다.

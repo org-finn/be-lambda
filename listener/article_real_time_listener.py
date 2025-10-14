@@ -143,7 +143,7 @@ def save_article_tickers(cursor, article_id: str, article_data: dict, insights: 
         INSERT INTO article_ticker (
             id, article_id, ticker_id, ticker_code, title, sentiment, 
             reasoning, published_date, created_at
-        ) VALUES %s ON CONFLICT (article_id, ticker_id) DO NOTHING;
+        ) VALUES %s;
     """
     psycopg2.extras.execute_values(cursor, query, to_insert)
     logger.info(f"Attempted to save {len(to_insert)} article_ticker data.")

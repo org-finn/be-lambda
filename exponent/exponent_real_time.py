@@ -9,6 +9,7 @@ import json
 import time
 import pytz
 import exchange_calendars as xcals
+from common.sqs_message_distributor_with_canary import send_prediction_messages
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -293,9 +294,12 @@ def send_exponent_price_message_to_sqs(exponent_id, price_date, price_data):
         raise e # 에러 발생 시 재시도를 위해 예외를 다시 발생
 
 def send_exponent_prediction_message_to_sqs(price_date, prediction_date, exponents):
-    """실시간 지수 데이터를 SQS FIFO 큐로 전송하는 함수"""
+    """
+    지수 예측 데이터를 공통 메시지 분배기를 통해 전송합니다.
+    이 함수는 카나리 배포를 자동으로 처리합니다.
+    """
     try:
-        message_body = json.dumps({
+        message_body = {
             'tickerId': wildcard_ticker_id,
             'type' : 'exponent',
             'payload' : {
@@ -303,16 +307,23 @@ def send_exponent_prediction_message_to_sqs(price_date, prediction_date, exponen
                 'priceDate' : price_date,
                 'predictionDate' : prediction_date.isoformat()
             }
-        })
-    
-        sqs_client.send_message(QueueUrl=PREDICTION_SQS_QUEUE_URL,
-            MessageBody=message_body
-        )
-                
-        logger.info(f"Successfully sent message to SQS for exponent prediction")
+        }
+        
+        # 예측 날짜를 기반으로 생성하여 동일 날짜에 대한 중복 전송을 방지
+        message_id = f"exponent-prediction-{prediction_date.isoformat()}"
+
+        message_to_send = [{
+            'id': message_id,
+            'body': message_body
+        }]
+
+        send_prediction_messages(message_to_send)
+        
+        logger.info(f"Successfully distributed exponent prediction message for date: {prediction_date.date()}")
+
     except Exception as e:
-        logger.exception(f"Failed to send message to SQS for exponent prediction")
-        raise e # 에러 발생 시 재시도를 위해 예외를 다시 발생  
+        logger.error(f"Failed to distribute exponent prediction message for date: {prediction_date.date()}")
+        raise e
 
 def lambda_handler(event, context):
     logger.info("Lambda handler started.")

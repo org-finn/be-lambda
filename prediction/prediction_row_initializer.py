@@ -6,6 +6,7 @@ import pytz
 from datetime import datetime, timezone
 from supabase import create_client, Client
 from polygon import RESTClient
+from common.sqs_message_distributor_with_canary import send_prediction_messages
 
 # --- 초기 설정 ---
 logger = logging.getLogger()
@@ -189,7 +190,7 @@ def lambda_handler(event, context):
             tickers = get_tickers_from_supabase() # 안전장치로 db에서 조회
         ticker_info_map = { ticker[0]: {'code': ticker[1], 'name': ticker[2]} for ticker in tickers }
 
-        prediction_to_send = []
+        messages_to_send = []
         for ticker_id in ticker_info_map.keys():
             code = ticker_info_map.get(ticker_id, {}).get('code')
             short_company_name = ticker_info_map.get(ticker_id, {}).get('name')
@@ -197,6 +198,7 @@ def lambda_handler(event, context):
             sma_data = get_ma(code)
             rsi_data = get_rsi(code)
             
+            # 1. 메시지 본문을 순수 Python 딕셔너리로 정의
             message_body = {
                 'tickerId': ticker_id,
                 'type' : 'init',
@@ -212,16 +214,16 @@ def lambda_handler(event, context):
                     'createdAt': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
                 }
             }
-            prediction_to_send.append({
-                'Id': code.replace('.', '-'),
-                'MessageBody': json.dumps(message_body)
+            
+            # 2. 공통 함수가 기대하는 형식 {'id': ..., 'body': ...} 으로 리스트에 추가
+            messages_to_send.append({
+                'id': code.replace('.', '-'), # 키를 'Id'에서 'id'로 변경
+                'body': message_body         # json.dumps() 제거
             })
-        
-        # Queue로 전송
-        for i in range(0, len(prediction_to_send), 10):
-            batch = prediction_to_send[i:i+10]
-            sqs_client.send_message_batch(QueueUrl=PREDICTION_SQS_QUEUE_URL, Entries=batch)
-        logger.info("✅ Successfully sent all sentiment stats to SQS.")
+
+        # 3. ✅ 공통 분배 함수를 한 번만 호출하여 모든 메시지 전송을 위임
+        send_prediction_messages(messages_to_send)
+        logger.info("✅ Successfully distributed all init prediction messages.")
     except Exception as e:
         logger.exception("A critical error occurred in the lambda handler.")
         raise e

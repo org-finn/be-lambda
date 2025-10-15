@@ -7,6 +7,7 @@ from supabase import create_client, Client
 from polygon import RESTClient
 import pytz
 from collections import defaultdict
+from common.sqs_message_distributor_with_canary import send_prediction_messages
 
 # --- 로거, 환경 변수, 클라이언트 초기화 ---
 logger = logging.getLogger()
@@ -213,9 +214,11 @@ def lambda_handler(event, context):
             logger.info("Sending %d sentiment stats to SQS queue...", 
                 len(sentiment_stats))
             
-            stats_entries_to_send = []
+            messages_to_send = [] 
             for ticker_code, counts in sentiment_stats.items():
                 ticker_info = ticker_info_map.get(ticker_code, {})
+                
+                # 1. 메시지 본문 (순수 Python 딕셔너리)
                 message_body = {
                     'tickerId': ticker_info.get('id'),
                     'type' : 'article',
@@ -227,15 +230,14 @@ def lambda_handler(event, context):
                         'createdAt': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
                     }
                 }
-                stats_entries_to_send.append({
-                    'Id': ticker_code.replace('.', '-'),
-                    'MessageBody': json.dumps(message_body)
+                
+                # 2. 공통 함수가 기대하는 형식으로 리스트에 추가
+                messages_to_send.append({
+                    'id': ticker_code.replace('.', '-'),
+                    'body': message_body
                 })
 
-            # 통계 메시지 일괄 전송
-            for i in range(0, len(stats_entries_to_send), 10):
-                batch = stats_entries_to_send[i:i+10]
-                sqs_client.send_message_batch(QueueUrl=PREDICTION_SQS_QUEUE_URL, Entries=batch)
+            send_prediction_messages(messages_to_send)
             logger.info("✅ Successfully sent all sentiment stats to SQS.")
 
     except Exception as e:

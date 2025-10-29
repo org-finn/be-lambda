@@ -3,7 +3,7 @@ import json
 import logging
 import boto3
 import pytz
-from datetime import datetime, timezone
+from datetime import date, timedelta, datetime, timezone
 from supabase import create_client, Client
 from polygon import RESTClient
 from common.sqs_message_distributor_with_canary import send_prediction_messages
@@ -174,6 +174,55 @@ def get_rsi(ticker_code):
         logger.error(f"오류 발생: {ticker_code} RSI 데이터를 가져오는 중 실패 - {e}")
         return {}
 
+def get_price_for_atr(ticker_code):
+    """
+    특정 티커의 오늘 고가, 오늘 저가, 전일 종가를 가져옵니다.
+    (최근 2거래일의 T-1 고/저, T-2 종가)
+    """
+    try:
+        # 1. 최근 2거래일 데이터 요청
+        # (주말/휴장일 고려 넉넉히 7일 전부터 조회)
+        to_date = date.today() - timedelta(days=1)
+        from_date = to_date - timedelta(days=7)
+
+        # 1. 제너레이터 반환
+        aggs_generator = polygon_client.list_aggs(
+            ticker=ticker_code,
+            multiplier=1,
+            timespan="day",
+            from_=from_date.isoformat(),
+            to=to_date.isoformat(),
+            sort="desc", # 최신순 정렬
+            limit=2      # 최근 2일치 데이터만 필요
+        )
+
+        # 2. 리스트로 변환
+        aggs_list = list(aggs_generator)
+
+        # 3. 리스트 길이 확인
+        if not aggs_list or len(aggs_list) < 2:
+            logger.warn(f"경고: {ticker_code}의 ATR 가격 데이터(2일치)가 2개 미만입니다.")
+            return {}
+
+        # 4. 값 추출 (라이브러리가 c, h, l을 close, high, low로 변환해 줌)
+        today_high = aggs_list[0].high
+        today_low = aggs_list[0].low
+        yesterday_close = aggs_list[1].close
+        logger.info(f"today_high: {today_high}, today_low: {today_low}, yesterday_close={yesterday_close}")
+
+        # 4. 최종 딕셔너리 생성 (Kotlin DTO와 형식을 맞추기 위해 camelCase 사용)
+        structured_data = {
+            "todayHigh": today_high,
+            "todayLow": today_low,
+            "yesterdayClose": yesterday_close
+        }
+        
+        return structured_data
+
+    except Exception as e:
+        logger.error(f"오류 발생: {ticker_code} ATR 가격 데이터를 가져오는 중 실패 - {e}")
+        return {}
+    
 def lambda_handler(event, context):
     """
     UTC 자정에 실행되어, 새로운 날이 거래일일 경우
@@ -197,6 +246,7 @@ def lambda_handler(event, context):
             macd_data = get_macd(code)
             sma_data = get_ma(code)
             rsi_data = get_rsi(code)
+            price_data = get_price_for_atr(code)
             
             # 1. 메시지 본문을 순수 Python 딕셔너리로 정의
             message_body = {
@@ -211,6 +261,9 @@ def lambda_handler(event, context):
                     'todayMa' : sma_data.get('todayMa'),
                     'yesterdayMa' : sma_data.get('yesterdayMa'),
                     'todayRsi' : rsi_data.get('todayRsi'),
+                    'todayHigh': price_data.get('todayHigh'),
+                    'todayLow': price_data.get('todayLow'),
+                    'yesterdayClose' : price_data.get('yesterdayClose'),
                     'createdAt': datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
                 }
             }

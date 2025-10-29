@@ -39,32 +39,65 @@ def lambda_handler(event, context):
     # --- 2. 프로덕션 환경을 새 버전으로 업데이트하는 동작 ---
     elif action == 'PROMOTE_TO_PRODUCTION':
         image_tag = event.get('imageTag')
+        if not image_tag:
+            raise ValueError("imageTag is required for PROMOTE_TO_PRODUCTION action.")
 
-        # --- ⭐️ Live Template 업데이트 로직 ⭐️ ---
-        # 1. live-template의 최신 User Data를 가져옵니다.
-        latest_version = ec2.describe_launch_template_versions(LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID, Versions=['$Latest'])
-        base64_user_data = latest_version['LaunchTemplateVersions'][0]['LaunchTemplateData']['UserData']
-        decoded_user_data = base64.b64decode(base64_user_data).decode('utf-8')
+        print(f"Updating Live Launch Template ({LIVE_LAUNCH_TEMPLATE_ID}) with Image Tag: {image_tag}")
+        
+        
+        try:
+            # 1. live-template의 최신 User Data 가져오기
+            latest_version_data = ec2.describe_launch_template_versions(
+                LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID,
+                Versions=['$Latest']
+            )['LaunchTemplateVersions'][0]['LaunchTemplateData']
 
-        # 2. 플레이스홀더를 새 이미지 태그로 교체합니다.
-        modified_user_data = decoded_user_data.replace("DOCKER_IMAGE_TAG_PLACEHOLDER", image_tag)
-        new_base64_user_data = base64.b64encode(modified_user_data.encode('utf-8')).decode('utf-8')
+            base64_user_data = latest_version_data.get('UserData')
+            if not base64_user_data:
+                 raise ValueError("Could not find UserData in the latest Launch Template version.")
 
-        # 3. 수정된 User Data로 live-template의 새 버전을 생성합니다.
-        new_version_response = ec2.create_launch_template_version(
-            LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID,
-            SourceVersion='$Latest',
-            VersionDescription=f"Image tag {image_tag}",
-            LaunchTemplateData={'UserData': new_base64_user_data}
-        )
-        new_version_number = new_version_response['LaunchTemplateVersion']['VersionNumber']
+            decoded_user_data = base64.b64decode(base64_user_data).decode('utf-8')
 
-        # 4. 방금 만든 새 버전을 live-template의 기본값으로 설정합니다.
-        ec2.modify_launch_template(
-            LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID,
-            DefaultVersion=str(new_version_number)
-        )
-        # ------------------------------------
+            # 2. 플레이스홀더(또는 이전 태그)를 새 이미지 태그로 교체
+            #    정규식 대신 단순 replace 사용 (더 안정적일 수 있음)
+            #    'export SPRING_APP_IMAGE="..."' 라인을 찾아 교체
+            lines = decoded_user_data.splitlines()
+            modified_lines = []
+            replaced = False
+            for line in lines:
+                if line.strip().startswith('export SPRING_APP_IMAGE='):
+                    modified_lines.append(f'export SPRING_APP_IMAGE="{image_tag}"')
+                    replaced = True
+                else:
+                    modified_lines.append(line)
+
+            if not replaced:
+                raise ValueError("Could not find 'export SPRING_APP_IMAGE=...' line in UserData.")
+
+            # 2. 플레이스홀더를 새 이미지 태그로 교체합니다.
+            modified_user_data = "\n".join(modified_lines)
+            new_base64_user_data = base64.b64encode(modified_user_data.encode('utf-8')).decode('utf-8')
+
+            # 3. 수정된 User Data로 live-template의 새 버전을 생성합니다.
+            new_version_response = ec2.create_launch_template_version(
+                LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID,
+                SourceVersion='$Latest',
+                VersionDescription=f"Image tag {image_tag}",
+                LaunchTemplateData={'UserData': new_base64_user_data}
+            )
+            new_version_number = new_version_response['LaunchTemplateVersion']['VersionNumber']
+            print(f"Created new Live Launch Template Version: {new_version_number}")
+
+            # 4. 방금 만든 새 버전을 live-template의 기본값으로 설정합니다.
+            ec2.modify_launch_template(
+                LaunchTemplateId=LIVE_LAUNCH_TEMPLATE_ID,
+                DefaultVersion=str(new_version_number)
+            )
+            print(f"Set version {new_version_number} as the default for Live Launch Template.")
+
+        except Exception as e:
+            print(f"Error updating Live Launch Template: {e}")
+            raise e
         
         print(f"Starting Instance Refresh for Production ASG ({PROD_ASG_NAME})")
         # 인스턴스 새로고침을 시작하여, 구버전 인스턴스를 새 버전으로 교체합니다.

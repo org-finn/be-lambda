@@ -117,22 +117,24 @@ def save_article(cursor, article: dict):
 def get_ticker_id_map(cursor, ticker_codes: list) -> dict:
     """Ticker 코드 리스트로 Ticker ID 맵을 조회합니다."""
     if not ticker_codes: return {}
-    cursor.execute("SELECT id, code FROM ticker WHERE code = ANY(%s);", (ticker_codes,))
-    return {code: ticker_id for ticker_id, code in cursor.fetchall()}
+    cursor.execute("SELECT id, code, short_company_name FROM ticker WHERE code = ANY(%s);", (ticker_codes,))
+    return {code: (ticker_id, short_company_name) for ticker_id, code, short_company_name in cursor.fetchall()}
 
 def save_article_tickers(cursor, article_id: str, article_data: dict, insights: list, ticker_id_map: dict):
     """Article Ticker 정보들을 Batch Insert 합니다."""
     seoul_time = datetime.now(timezone("Asia/Seoul"))
     to_insert = []
     for insight in insights:
-        ticker_code, ticker_id = insight['ticker_code'], ticker_id_map.get(insight['ticker_code'])
+        ticker_code = insight['ticker_code']
+        ticker_id, short_company_name = ticker_id_map.get(insight['ticker_code'])
+        
         if not ticker_id:
             logger.warning(f"Ticker ID for code '{ticker_code}' not found. Skipping.")
             continue
         to_insert.append((
             str(uuid.uuid4()), article_id, ticker_id, ticker_code, article_data['title'],
-            insight['sentiment'], insight['reasoning'], article_data['published_date'],
-            seoul_time.isoformat()
+            insight['sentiment'], insight['reasoning'], article_data['published_date'], 
+            short_company_name, seoul_time.isoformat()
         ))
 
     if not to_insert:
@@ -142,7 +144,7 @@ def save_article_tickers(cursor, article_id: str, article_data: dict, insights: 
     query = """
         INSERT INTO article_ticker (
             id, article_id, ticker_id, ticker_code, title, sentiment, 
-            reasoning, published_date, created_at
+            reasoning, published_date, short_company_name, created_at
         ) VALUES %s;
     """
     psycopg2.extras.execute_values(cursor, query, to_insert)

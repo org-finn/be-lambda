@@ -192,7 +192,7 @@ def get_price_for_atr(ticker_code):
             from_=from_date.isoformat(),
             to=to_date.isoformat(),
             sort="desc", # 최신순 정렬
-            limit=2      # 최근 2일치 데이터만 필요
+            limit=50000      # 최근 2일치 데이터만 필요
         )
 
         # 2. 리스트로 변환

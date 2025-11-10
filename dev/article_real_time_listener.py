@@ -72,11 +72,12 @@ def save_article(article: dict) -> str:
     supabase.upsert with ignore_duplicates=True를 사용하여 'INSERT IGNORE'를 구현합니다.
     """
     seoul_time = datetime.now(timezone("Asia/Seoul"))
-
     article_params = {
         'published_date': article.get('published_date'),
         'title': article.get('title'),
+        'title_kr' : article.get('title_kr'),
         'description': article.get('description'),
+        'description_kr': article.get('description_kr'),
         'article_url': article.get('article_url'),
         'thumbnail_url': article.get('thumbnail_url'),
         'author': article.get('author'),
@@ -106,10 +107,10 @@ def get_ticker_id_map(ticker_codes: list) -> dict:
     if not ticker_codes:
         return {}
 
-    response = supabase.table('ticker').select('id, code').in_('code', ticker_codes).execute()
+    response = supabase.table('ticker').select('id, code, short_company_name').in_('code', ticker_codes).execute()
     
     if response.data:
-        return {item['code']: item['id'] for item in response.data}
+        return {item['code']: {item['id'], item['short_company_name']} for item in response.data}
     return {}
 
 
@@ -122,7 +123,7 @@ def save_article_tickers(article_id: str, article_data: dict, insights: list, ti
 
     for insight in insights:
         ticker_code = insight['ticker_code']
-        ticker_id = ticker_id_map.get(ticker_code)
+        ticker_id, short_company_name = ticker_id_map.get(insight['ticker_code'])
 
         if not ticker_id:
             logger.warning(f"Ticker ID for code '{ticker_code}' not found. Skipping.")
@@ -134,8 +135,11 @@ def save_article_tickers(article_id: str, article_data: dict, insights: list, ti
             'ticker_id': ticker_id,
             'ticker_code': ticker_code,
             'title': article_data['title'],
+            'title_kr': article_data['title_kr'],
             'sentiment': insight['sentiment'],
             'reasoning': insight['reasoning'],
+            'reasoning_kr': insight['reasoning_kr'],
+            'short_company_name' : short_company_name,
             'published_date': article_data['published_date'],
             'created_at': seoul_time.isoformat()
         })

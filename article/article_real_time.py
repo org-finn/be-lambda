@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from polygon import RESTClient
 import pytz
+import time
+import concurrent.futures
 from collections import defaultdict
 from common.sqs_message_distributor_with_canary import send_prediction_messages
 
@@ -24,6 +26,8 @@ sqs_client = boto3.client('sqs')
 ssm_client = boto3.client('ssm')
 polygon_client = RESTClient(POLYGON_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+translate_client = boto3.client('translate')
 
 def get_tickers_from_parameter_store():
     """Parameter Store에서 저장된 티커 목록을 가져옵니다."""
@@ -107,7 +111,50 @@ def add_news_count_for_sentiment(insight, ticker, sentiment_stats):
     else: # 'neutral' 또는 None일 경우
         sentiment_stats[ticker]["neutral"] += 1
 
+def translate_payload(payload):
+    try:
+        # 1. 제목 번역
+        if payload.get('title'):
+            title_res = translate_client.translate_text(
+                Text=payload['title'],
+                SourceLanguageCode='auto',  # 'auto'로 자동 언어 감지
+                TargetLanguageCode='ko'
+            )
+            payload['title_kr'] = title_res['TranslatedText']
+        else:
+            payload['title_kr'] = None
 
+        # 2. 설명 번역
+        if payload.get('description'):
+            desc_res = translate_client.translate_text(
+                Text=payload['description'],
+                SourceLanguageCode='auto',
+                TargetLanguageCode='ko'
+            )
+            payload['description_kr'] = desc_res['TranslatedText']
+        else:
+            payload['description_kr'] = None
+
+        # 3. Insights 내 'reasoning' 번역 (이미 필터링된 목록)
+        if payload.get('insights'):
+            for insight in payload['insights']:
+                if insight.get('reasoning'):
+                    reasoning_res = translate_client.translate_text(
+                        Text=insight['reasoning'],
+                        SourceLanguageCode='auto',
+                        TargetLanguageCode='ko'
+                    )
+                    insight['reasoning_kr'] = reasoning_res['TranslatedText']
+                else:
+                    insight['reasoning_kr'] = None
+        
+        return payload  # 수정된 payload 반환
+        
+    except Exception as e:
+        # 개별 아티클 번역 실패가 전체 배치를 중단시키지 않도록 로깅 후 원본 반환
+        logger.error(f"Failed to translate payload for article {payload.get('distinct_id')}: {e}")
+        return payload  # 오류 발생 시 원본 payload 반환
+    
 def lambda_handler(event, context):
     """여러 종목 정보가 포함된 뉴스를 각 티커별로 그룹화하여 SQS로 전송합니다."""
     logger.info("Article collection Lambda handler started.")
@@ -182,6 +229,22 @@ def lambda_handler(event, context):
         if not articles_to_send:
             logger.info("No new articles to process.")
         else:
+            # ⭐️ START: 병렬 번역 작업 추가
+            logger.info(f"Starting parallel translation for {len(articles_to_send)} articles...")
+            start_translate = time.perf_counter()
+
+            # ThreadPoolExecutor를 사용해 translate_payload 함수를 병렬 호출
+            # max_workers=10 (기본값 이상)으로 동시 API 호출
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                # executor.map은 입력 순서와 동일한 순서의 결과 리스트를 반환
+                translated_articles_to_send = list(executor.map(translate_payload, articles_to_send))
+            
+            end_translate = time.perf_counter()
+            logger.info(f"Parallel translation finished in {end_translate - start_translate:.4f} seconds.")
+            
+            # 번역된 결과로 SQS 전송 목록을 교체
+            articles_to_send = translated_articles_to_send
+            
             # 3-1. 아티클 메시지 전송
             # SQS로 보낼 총 기사 수 계산
             logger.info("Sending %d unique articles to SQS queue...",

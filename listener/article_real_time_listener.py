@@ -99,7 +99,8 @@ def save_article(cursor, article: dict):
     seoul_time = datetime.now(timezone("Asia/Seoul"))
     article_params = {
         'published_date': article.get('published_date'),
-        'title': article.get('title'), 'description': article.get('description'),
+        'title': article.get('title'), 'title_kr': article.get('title_kr'), 
+        'description': article.get('description'), 'description_kr': article.get('description_kr'),
         'article_url': article.get('article_url'), 'thumbnail_url': article.get('thumbnail_url'),
         'author': article.get('author'), 'distinct_id': article.get('distinct_id'),
         'tickers': article.get('tickers'), 'created_at': seoul_time.isoformat()
@@ -132,8 +133,9 @@ def save_article_tickers(cursor, article_id: str, article_data: dict, insights: 
             logger.warning(f"Ticker ID for code '{ticker_code}' not found. Skipping.")
             continue
         to_insert.append((
-            str(uuid.uuid4()), article_id, ticker_id, ticker_code, article_data['title'],
-            insight['sentiment'], insight['reasoning'], article_data['published_date'], 
+            str(uuid.uuid4()), article_id, ticker_id, ticker_code, article_data['title'], article_data['title_kr'],
+            insight['sentiment'], insight['reasoning'], insight['reasoning_kr'],
+            article_data['published_date'], 
             short_company_name, seoul_time.isoformat()
         ))
 
@@ -143,8 +145,8 @@ def save_article_tickers(cursor, article_id: str, article_data: dict, insights: 
 
     query = """
         INSERT INTO article_ticker (
-            id, article_id, ticker_id, ticker_code, title, sentiment, 
-            reasoning, published_date, short_company_name, created_at
+            id, article_id, ticker_id, ticker_code, title, title_kr, sentiment, 
+            reasoning, reasoning_kr, published_date, short_company_name, created_at
         ) VALUES %s;
     """
     psycopg2.extras.execute_values(cursor, query, to_insert)

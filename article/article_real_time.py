@@ -10,6 +10,7 @@ import time
 import concurrent.futures
 from collections import defaultdict
 from common.sqs_message_distributor_with_canary import send_prediction_messages
+from difflib import SequenceMatcher
 
 # --- 로거, 환경 변수, 클라이언트 초기화 ---
 logger = logging.getLogger()
@@ -96,10 +97,56 @@ def fetch_articles(published_utc_gte, ticker_code, limit):
                 published_utc_gte=published_utc_gte
             )
         if response:
-            return response
+            return list(response)
     except Exception as e:
         logger.error("Polygon news API failed for ticker %s: %s", ticker_code or "ALL", e)
     return []
+
+def deduplicate_articles(articles, similarity_threshold=0.8):
+    """
+    제목(title)의 유사도를 기준으로 뉴스 기사 목록의 중복을 제거합니다.
+    
+    Args:
+        articles (list): Polygon API에서 반환된 아티클 객체 리스트.
+        similarity_threshold (float): 중복으로 간주할 유사도 임계값 (0.0 ~ 1.0).
+                                      0.8은 80% 일치를 의미합니다.
+
+    Returns:
+        list: 중복이 제거된 아티클 객체 리스트.
+    """
+    deduplicated_articles = []
+    
+    for new_article in articles:
+        if not hasattr(new_article, 'title') or not new_article.title:
+            # 제목이 없는 아티클은 건너뜁니다.
+            continue
+        
+        new_title = new_article.title
+        is_duplicate = False
+
+        # 이미 추가된 고유 아티클 리스트와 비교
+        for existing_article in deduplicated_articles:
+            existing_title = existing_article.title
+            
+            # SequenceMatcher를 사용하여 두 제목 간의 유사도 비율을 계산
+            s = SequenceMatcher(None, new_title, existing_title)
+            similarity = s.ratio()
+            
+            # 유사도가 임계값(80%) 이상이면 중복으로 간주
+            if similarity >= similarity_threshold:
+                logger.info(
+                    f"Found duplicate article (similarity: {similarity:.2f}).\n"
+                    f"  Keeping: '{existing_title}' (ID: {existing_article.id})\n"
+                    f"  Discarding: '{new_title}' (ID: {new_article.id})"
+                )
+                is_duplicate = True
+                break  # 중복을 찾았으므로 내부 루프 중단
+
+        # 중복이 아닌 경우에만 최종 리스트에 추가
+        if not is_duplicate:
+            deduplicated_articles.append(new_article)
+            
+    return deduplicated_articles
 
 def add_news_count_for_sentiment(insight, ticker, sentiment_stats):
 
@@ -183,6 +230,14 @@ def lambda_handler(event, context):
         # 1. 전체 최신 뉴스 수집
         logger.info("Fetching general articles...")
         articles_to_process = fetch_articles(published_utc_gte, None, 100)
+        
+        # 중복 제거 함수 호출
+        initial_count = len(articles_to_process)
+        # 80% 유사도 기준으로 중복 제거 함수 호출
+        articles_to_process = deduplicate_articles(articles_to_process, similarity_threshold=0.8)
+        deduplicated_count = len(articles_to_process)
+        logger.info(f"Deduplication complete. Removed {initial_count - deduplicated_count} articles. "
+                    f"Processing {deduplicated_count} unique articles.")
         
         articles_to_send = []
         # 티커별 sentiment_news_count

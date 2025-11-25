@@ -70,7 +70,10 @@ def lambda_handler(event, context):
         try:
             logger.info(f"Inserting {len(records_to_insert)} records into article_summary...")
             # Supabase insert 실행
-            supabase.table('article_summary').insert(records_to_insert).execute()
+            supabase.table('article_summary').upsert(
+                records_to_insert, 
+                ignore_duplicates=True
+                ).execute()
             logger.info("Successfully inserted data into Supabase.")
         except Exception as e:
             logger.error(f"Failed to insert data into Supabase: {e}")

@@ -99,6 +99,7 @@ def lambda_handler(event, context):
                     neutral_keywords,
                     created_at
                 ) VALUES %s
+                ON CONFLICT (ticker_id, summary_date) DO NOTHING
             """
             
             execute_values(cur, insert_query, records_to_insert)

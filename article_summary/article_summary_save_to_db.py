@@ -65,7 +65,6 @@ def lambda_handler(event, context):
                 body.get('negativeReasoning'),
                 (body.get('positiveKeywords') or "")[:100],
                 (body.get('negativeKeywords') or "")[:100],
-                (body.get('neutralKeywords') or "")[:100],
                 datetime.now(timezone.utc).isoformat()
             )
             
@@ -96,7 +95,6 @@ def lambda_handler(event, context):
                     negative_reasoning, 
                     positive_keywords, 
                     negative_keywords, 
-                    neutral_keywords,
                     created_at
                 ) VALUES %s
                 ON CONFLICT (ticker_id, summary_date) DO NOTHING

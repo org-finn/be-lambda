@@ -40,7 +40,6 @@ def lambda_handler(event, context):
                 summary_date = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
             # DB 컬럼 매핑 (CamelCase JSON -> Snake_case DB Column)
-            # 주의: neutralReasoning은 Upstream에서 오지 않으므로 None 처리
             row = {
                 "id" : str(uuid.uuid4()),
                 "ticker_id": ticker_id,
@@ -51,7 +50,6 @@ def lambda_handler(event, context):
                 # varchar(100) 제한을 고려하여 문자열 자르기 (안전장치)
                 "positive_keywords": (body.get('positiveKeywords') or "")[:100],
                 "negative_keywords": (body.get('negativeKeywords') or "")[:100],
-                "neutral_keywords": (body.get('neutralKeywords') or "")[:100],
                 "created_at" : datetime.now(timezone.utc).isoformat()
             }
             

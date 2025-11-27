@@ -41,7 +41,7 @@ def call_gemini_model(company_name, articles):
     1. 위 뉴스들을 종합적으로 분석하여 해당 기업의 주가나 평판에 긍정적인 요인과 부정적인 요인을 각각 파악하세요. (한글로 작성)
     2. 'positiveReasoning': 긍정적인 요인들을 최대 3개 추출하세요. 각 문장은 엔터 단위로 구분해서 해당 필드에 모두 담아주세요. (없으면 '특이사항 없음'으로 작성)
     3. 'negativeReasoning': 부정적인 요인들을 최대 3개 추출하세요. 각 문장은 엔터 단위로 구분해서 해당 필드에 모두 담아주세요. (없으면 '특이사항 없음'으로 작성)
-    4. 뉴스에서 핵심 키워드를 추출하고, 각 키워드의 성격(긍정, 부정, 중립)에 따라 분류하세요. 키워드의 길이는 한글/영문 모두 5자로 제한해주고, 키워드 개수는 각 성격 별로 최대 5개로 제한해주세요.
+    4. 뉴스에서 핵심 키워드를 추출하고, 각 키워드의 성격(긍정, 부정)에 따라 분류하세요. 키워드의 길이는 한글/영문 모두 5자로 제한해주고, 키워드 개수는 각 성격 별로 최대 5개로 제한해주세요.
     """
 
     # 3. 응답 스키마 정의 (JSON 강제)
@@ -56,12 +56,9 @@ def call_gemini_model(company_name, articles):
             },
             "negativeKeywords": {
                 "type": "ARRAY", "items": {"type": "STRING"}, "description": "부정적 영향을 주는 키워드 리스트"
-            },
-            "neutralKeywords": {
-                "type": "ARRAY", "items": {"type": "STRING"}, "description": "중립적이거나 일반적인 키워드 리스트"
             }
         },
-        "required": ["positiveReasoning", "negativeReasoning", "positiveKeywords", "negativeKeywords", "neutralKeywords"]
+        "required": ["positiveReasoning", "negativeReasoning", "positiveKeywords", "negativeKeywords"]
     }
 
     try:
@@ -118,7 +115,6 @@ def lambda_handler(event, context):
             # 키워드 리스트를 콤마 구분 문자열로 변환
             pos_keywords_str = ", ".join(ai_result.get('positiveKeywords', []))
             neg_keywords_str = ", ".join(ai_result.get('negativeKeywords', []))
-            neu_keywords_str = ", ".join(ai_result.get('neutralKeywords', []))
 
             # 다음 SQS로 보낼 최종 메시지 구성
             result_message = {
@@ -130,7 +126,6 @@ def lambda_handler(event, context):
                 "negativeReasoning": ai_result.get('negativeReasoning', ''),
                 "positiveKeywords": pos_keywords_str,
                 "negativeKeywords": neg_keywords_str,
-                "neutralKeywords": neu_keywords_str,
                 "summaryDate": datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
             }
 

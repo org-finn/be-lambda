@@ -101,7 +101,7 @@ def fetch_articles(published_utc_gte, ticker_code, limit):
         logger.error("Polygon news API failed for ticker %s: %s", ticker_code or "ALL", e)
     return []
 
-def deduplicate_articles(articles, similarity_threshold=0.8):
+def deduplicate_articles(articles, similarity_threshold=0.7):
     """
     제목(title)의 유사도를 기준으로 뉴스 기사 목록의 중복을 제거합니다.
     
@@ -131,7 +131,7 @@ def deduplicate_articles(articles, similarity_threshold=0.8):
             s = SequenceMatcher(None, new_title, existing_title)
             similarity = s.ratio()
             
-            # 유사도가 임계값(80%) 이상이면 중복으로 간주
+            # 유사도가 임계값 이상이면 중복으로 간주
             if similarity >= similarity_threshold:
                 logger.info(
                     f"Found duplicate article (similarity: {similarity:.2f}).\n"

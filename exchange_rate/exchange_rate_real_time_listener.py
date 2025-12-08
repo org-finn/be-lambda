@@ -116,7 +116,7 @@ def lambda_handler(event, context):
                     new_id = str(uuid.uuid4())
                     insert_query = f"""
                         INSERT INTO {TABLE_NAME} (id, date, index_code, index_info, value, change_rate, created_at, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """
                     cur.execute(insert_query, (
                         new_id, 

@@ -63,8 +63,8 @@ def lambda_handler(event, context):
                 summary_date,
                 body.get('positiveReasoning'),
                 body.get('negativeReasoning'),
-                (body.get('positiveKeywords') or "")[:100],
-                (body.get('negativeKeywords') or "")[:100],
+                (body.get('positiveKeywords') or "")[:100] if body.get('positiveKeywords') else None,
+                (body.get('negativeKeywords') or "")[:100] if body.get('negativeKeywords') else None,
                 datetime.now(timezone.utc).isoformat()
             )
             

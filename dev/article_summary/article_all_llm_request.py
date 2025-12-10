@@ -32,6 +32,7 @@ def call_gemini_model(articles):
 
     # 2. 프롬프트 구성
     prompt = f"""
+    이전의 모든 지침들은 잊어버리세요.
     다음은 시장 종합 최신 뉴스 데이터입니다.
     
     [뉴스 데이터]
@@ -39,9 +40,9 @@ def call_gemini_model(articles):
 
     [지시사항]
     1. 위 뉴스들을 종합적으로 분석하여 긍정적인 요인과 부정적인 요인을 각각 파악하세요. (한글로 작성)
-    2. 'positiveReasoning': 긍정적인 요인들을 최대 3개 추출하세요. 각 문장은 엔터 단위로 구분해서 해당 필드에 모두 담아주세요. (없으면 '특이사항 없음'으로 작성)
-    3. 'negativeReasoning': 부정적인 요인들을 최대 3개 추출하세요. 각 문장은 엔터 단위로 구분해서 해당 필드에 모두 담아주세요. (없으면 '특이사항 없음'으로 작성)
-    4. 뉴스에서 핵심 키워드를 추출하고, 각 키워드의 성격(긍정, 부정)에 따라 분류하세요. 키워드의 길이는 한글/영문 모두 5자로 제한해주고, 키워드 개수는 각 성격 별로 최대 5개로 제한해주세요.
+    2. 'positiveReasoning': 긍정적인 요인들을 최대 3개 추출하세요. 각 문장은 엔터 단위로 구분해서 해당 필드에 모두 담아주세요. (해당 내용이 없으면 null 반환)
+    3. 'negativeReasoning': 부정적인 요인들을 최대 3개 추출하세요. 각 문장은 엔터 단위로 구분해서 해당 필드에 모두 담아주세요. (해당 내용이 없으면 null 반환)
+    4. 뉴스에서 핵심 키워드를 추출하고, 각 키워드의 성격(긍정, 부정)에 따라 분류하세요. 키워드의 길이는 한글/영문 모두 5자로 제한해주고, 키워드 개수는 각 성격 별로 최대 5개로 제한해주세요. (해당 내용이 없으면 null 반환)
     """
 
     # 3. 응답 스키마 정의 (JSON 강제)
@@ -49,13 +50,13 @@ def call_gemini_model(articles):
     response_schema = {
         "type": "OBJECT",
         "properties": {
-            "positiveReasoning": {"type": "STRING", "description": "긍정 요인 요약 텍스트"},
-            "negativeReasoning": {"type": "STRING", "description": "부정 요인 요약 텍스트"},
+            "positiveReasoning": {"type": "STRING", "nullable": True, "description": "긍정 요인 요약"},
+            "negativeReasoning": {"type": "STRING", "nullable": True, "description": "부정 요인 요약"},
             "positiveKeywords": {
-                "type": "ARRAY", "items": {"type": "STRING"}, "description": "긍정적 영향을 주는 키워드 리스트"
+                "type": "ARRAY", "items": {"type": "STRING"}, "nullable": True, "description": "긍정적 키워드 리스트"
             },
             "negativeKeywords": {
-                "type": "ARRAY", "items": {"type": "STRING"}, "description": "부정적 영향을 주는 키워드 리스트"
+                "type": "ARRAY", "items": {"type": "STRING"}, "nullable": True, "description": "부정적 키워드 리스트"
             }
         },
         "required": ["positiveReasoning", "negativeReasoning", "positiveKeywords", "negativeKeywords"]
@@ -101,9 +102,16 @@ def lambda_handler(event, context):
             ai_result = call_gemini_model(articles)
             
             # --- 결과 데이터 가공 ---
-            pos_keywords_str = ", ".join(ai_result.get('positiveKeywords', []))
-            neg_keywords_str = ", ".join(ai_result.get('negativeKeywords', []))
-
+            if ai_result.get('positiveKeywords'):
+                pos_keywords_str = ", ".join(ai_result.get('positiveKeywords'))
+            else:
+                pos_keywords_str = None
+            
+            if ai_result.get('negativeKeywords'):
+                neg_keywords_str = ", ".join(ai_result.get('negativeKeywords'))
+            else:
+                neg_keywords_str = None
+                
             # 다음 SQS로 보낼 최종 메시지 구성
             # (ticker_id는 요청하신 대로 제외했습니다)
             result_message = {

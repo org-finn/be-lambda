@@ -44,8 +44,8 @@ def lambda_handler(event, context):
                 "positive_reasoning": body.get('positiveReasoning'),
                 "negative_reasoning": body.get('negativeReasoning'),
                 # varchar(100) 제한을 고려하여 문자열 자르기 (안전장치)
-                "positive_keywords": (body.get('positiveKeywords') or "")[:100],
-                "negative_keywords": (body.get('negativeKeywords') or "")[:100],
+                "positive_keywords": (body.get('positiveKeywords') or "")[:100] if body.get('positiveKeywords') else None,
+                "negative_keywords": (body.get('negativeKeywords') or "")[:100] if body.get('negativeKeywords') else None,
                 "created_at" : datetime.now(timezone.utc).isoformat()
             }
             

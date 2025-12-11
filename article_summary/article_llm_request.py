@@ -123,6 +123,22 @@ def lambda_handler(event, context):
                 neg_keywords_str = ", ".join(ai_result.get('negativeKeywords'))
             else:
                 neg_keywords_str = None
+            
+            if ai_result.get('positiveReasoning'):
+                pos_reasoning = ai_result.get('positiveReasoning')
+            else:
+                pos_reasoning = None
+            
+            if ai_result.get('negativeReasoning'):
+                neg_reasoning = ai_result.get('negativeReasoning')
+            else:
+                neg_reasoning = None
+            
+            has_content = any([pos_keywords_str, neg_keywords_str, pos_reasoning, neg_reasoning])
+            
+            if not has_content:
+                logger.warning(f"Skipping record for ticker {short_company_name}: All reasoning and keywords are empty.")
+                continue
 
             # 다음 SQS로 보낼 최종 메시지 구성
             result_message = {
@@ -130,8 +146,8 @@ def lambda_handler(event, context):
                 "shortCompanyName": short_company_name,
                 "requestId": request_id,
                 # 분석 결과 필드
-                "positiveReasoning": ai_result.get('positiveReasoning', None),
-                "negativeReasoning": ai_result.get('negativeReasoning', None),
+                "positiveReasoning": pos_reasoning,
+                "negativeReasoning": neg_reasoning,
                 "positiveKeywords": pos_keywords_str,
                 "negativeKeywords": neg_keywords_str,
                 "summaryDate": datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()

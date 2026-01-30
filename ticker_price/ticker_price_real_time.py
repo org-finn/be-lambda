@@ -147,7 +147,7 @@ def get_access_token(key, secret, base_url):
 
 def get_overseas_stock_price(token, key, secret, base_url, symbol, exchange_code):
     """해외주식 현재가를 조회하는 함수"""
-    path = "/uapi/overseas-price/v1/quotations/inquire-asking-price"
+    path = "/uapi/overseas-price/v1/quotations/price-detail"
     url = f"{base_url}{path}"
 
     # 요청 헤더 설정
@@ -156,14 +156,14 @@ def get_overseas_stock_price(token, key, secret, base_url, symbol, exchange_code
         "authorization": f"Bearer {token}",
         "appkey": key,
         "appsecret": secret,
-        "tr_id": "HHDFS76200100", # 거래 ID: API마다 정해진 고유값
+        "tr_id": "HHDFS76200200",
         "custtype" : "P"
     }   
 
     # 요청 파라미터 설정
     params = {
         "AUTH": ' ', # 사용자 인증 토큰, 현재는 사용되지 않아 빈 값
-        "EXCD": exchange_code, # 거래소 코드 (NASD: 나스닥, NYSE: 뉴욕 등)
+        "EXCD": exchange_code, # 거래소 코드 (NAS: 나스닥, NYS: 뉴욕 등)
         "SYMB": symbol # 종목 심볼
     }
 
@@ -282,10 +282,10 @@ def lambda_handler(event, context):
             ticker_code = item[1]
             exchange_code = item[2]
 
-            price_data = get_overseas_stock_price(access_token, KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, ticker_code, exchange_code[:-1])
+            price_data = get_overseas_stock_price(access_token, KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, ticker_code, exchange_code)
             
-            if price_data and price_data.get('output1'):
-                current_price = price_data['output1'].get('last')
+            if price_data and price_data.get('output'):
+                current_price = price_data['output'].get('last')
                 
                 # SQS로 보낼 데이터 구성
                 payload = {

@@ -10,7 +10,7 @@ from google.genai import types
 
 # --- 설정 및 초기화 ---
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 # 환경 변수
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -221,6 +221,10 @@ def lambda_handler(event, context):
                 'createdAt': current_time_iso
             }
         }
+        if ticker_code in ['NVDA','AMD','DIS']:
+            logger.debug(f"positive_article_count: {counts['positive']}, \
+                negative_article_count: {counts['negative']}, \
+                neutral_article_count: {counts['neutral']}")
         sqs_messages.append(message_body)
 
     if sqs_messages:

@@ -1,3 +1,4 @@
+# article_prediction_llm_request.py
 import os
 import json
 import logging
@@ -111,7 +112,7 @@ def call_gemini_model_with_clustering(articles, ticker_context_str):
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash', 
+            model='gemini-2.5-flash-lite', 
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type='application/json',

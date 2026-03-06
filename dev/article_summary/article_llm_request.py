@@ -1,3 +1,4 @@
+# article_llm_request.py
 import os
 import json
 import logging
@@ -64,7 +65,7 @@ def call_gemini_model(company_name, articles):
     try:
         # 4. Gemini API 호출
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",

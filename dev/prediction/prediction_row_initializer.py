@@ -34,8 +34,14 @@ def get_tickers_from_parameter_store():
         cached_data = json.loads(param['Parameter']['Value'])
         all_tickers = cached_data.get('tickers', [])
 
+        # 캐시에 short_company_name_kr이 없을 경우를 대비하여 len 체크 (인덱스 에러 방지)
         filtered_tickers = [
-            (item[0], item[1], item[2]) for item in all_tickers
+            (
+                item[0], 
+                item[1], 
+                item[2], 
+                item[3] if len(item) > 3 else None  # short_company_name_kr 추가
+            ) for item in all_tickers
         ]
         
         return filtered_tickers
@@ -51,9 +57,17 @@ def get_tickers_from_supabase():
     """Supabase에서 처리할 모든 티커 목록을 조회합니다."""
     logger.info("Fetching tickers from Supabase.")
     try:
-        response = supabase.table('ticker').select('id, code, short_company_name').execute()
+        # short_company_name_kr 필드 추가
+        response = supabase.table('ticker').select('id, code, short_company_name, short_company_name_kr').execute()
         if response.data:
-            tickers = [(item['id'], item['code'], item['short_company_name']) for item in response.data]
+            tickers = [
+                (
+                    item['id'], 
+                    item['code'], 
+                    item['short_company_name'], 
+                    item.get('short_company_name_kr') # short_company_name_kr 추가
+                ) for item in response.data
+            ]
             logger.info("Found %d tickers to process.", len(tickers))
             return tickers
     except Exception as e:
@@ -237,12 +251,22 @@ def lambda_handler(event, context):
         tickers = get_tickers_from_parameter_store() # 선 파라미터 조회
         if tickers is None:
             tickers = get_tickers_from_supabase() # 안전장치로 db에서 조회
-        ticker_info_map = { ticker[0]: {'code': ticker[1], 'name': ticker[2]} for ticker in tickers }
+            
+        # name_kr 추가    
+        ticker_info_map = { 
+            ticker[0]: {
+                'code': ticker[1], 
+                'name': ticker[2],
+                'name_kr': ticker[3]
+            } for ticker in tickers 
+        }
 
         prediction_to_send = []
         for ticker_id in ticker_info_map.keys():
             code = ticker_info_map.get(ticker_id, {}).get('code')
             short_company_name = ticker_info_map.get(ticker_id, {}).get('name')
+            short_company_name_kr = ticker_info_map.get(ticker_id, {}).get('name_kr') # 한글명 추출
+            
             macd_data = get_macd(code)
             sma_data = get_ma(code)
             rsi_data = get_rsi(code)
@@ -254,6 +278,7 @@ def lambda_handler(event, context):
                 'payload' : {
                     'tickerCode' : code,
                     'shortCompanyName' : short_company_name,
+                    'shortCompanyNameKr' : short_company_name_kr, # 새로 추가된 부분
                     'predictionDate': prediction_date.isoformat(),
                     'todayMacd' : macd_data.get('todayMacd'),
                     'yesterdayMacd' : macd_data.get('yesterdayMacd'),
@@ -284,4 +309,3 @@ def lambda_handler(event, context):
         'statusCode': 200,
         'body': f'Successfully processed and sent predictions to SQS.'
     }
-    

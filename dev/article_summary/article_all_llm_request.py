@@ -64,33 +64,25 @@ def call_gemini_model(articles):
         "required": ["positiveReasoning", "negativeReasoning", "positiveKeywords", "negativeKeywords"]
     }
 
-    # 4. Gemini API 호출 (재시도 로직 포함)
-    for attempt in range(1, 6):  # 최대 5회 시도
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.1-flash-lite-preview",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=response_schema
-                )
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=response_schema
             )
-            
-            # 5. 결과 파싱 (JSON 문자열 -> Dict)
-            if hasattr(response, 'parsed') and response.parsed:
-                return response.parsed
-            else:
-                return json.loads(response.text)
+        )
+        
+        # 5. 결과 파싱 (JSON 문자열 -> Dict)
+        if hasattr(response, 'parsed') and response.parsed:
+            return response.parsed
+        else:
+            return json.loads(response.text)
 
-        except Exception as e:
-            # 429 RESOURCE_EXHAUSTED 에러 처리
-            if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < 5:
-                logger.warning(f"Gemini API 429 RESOURCE_EXHAUSTED. Retrying in 30 seconds... (Attempt {attempt}/5)")
-                time.sleep(30)
-                continue
-            
-            logger.error(f"Gemini API Call Failed: {e}")
-            raise e
+    except Exception as e:
+        logger.error(f"Gemini API Error: {e}")
+        return []
 
 
 def lambda_handler(event, context):

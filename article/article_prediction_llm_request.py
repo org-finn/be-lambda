@@ -111,25 +111,20 @@ def call_gemini_model_with_clustering(articles, ticker_context_str):
     Return the result as a JSON list of clusters.
     """
 
-    for attempt in range(1, 6):  # 최대 5회 시도
-        try:
-            response = client.models.generate_content(
-                model='gemini-3.1-flash-lite-preview', 
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type='application/json',
-                    response_schema=response_schema,
-                    temperature=0.1 # 클러스터링은 논리적이여야 하므로 창의성(Temperature)을 낮춤
-                )
+    try:
+        response = client.models.generate_content(
+            model='gemini-3.1-flash-lite', 
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type='application/json',
+                response_schema=response_schema,
+                temperature=0.1 # 클러스터링은 논리적이여야 하므로 창의성(Temperature)을 낮춤
             )
-            return json.loads(response.text)
-        except Exception as e:
-            if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < 5:
-                logger.warning(f"Gemini API 429 RESOURCE_EXHAUSTED. Retrying in 30 seconds... (Attempt {attempt}/5)")
-                time.sleep(30)
-                continue
-            logger.error(f"Gemini API Error after {attempt} attempts: {e}")
-            raise e
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        logger.error(f"Gemini API Error: {e}")
+        return []
 
 def send_batch_to_sqs(messages):
     """SQS 배치 전송"""

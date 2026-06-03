@@ -31,8 +31,8 @@ def get_tickers_from_parameter_store():
         logger.exception("Failed to get tickers.")
         return []
 
-def fetch_company_news(symbol):
-    """Finnhub에서 뉴스 조회"""
+def fetch_company_news(symbol, limit=100):
+    """Finnhub에서 뉴스 조회 후 최대 limit 개수만큼 잘라서 반환"""
     url = "https://finnhub.io/api/v1/company-news"
     today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     
@@ -46,7 +46,12 @@ def fetch_company_news(symbol):
     try:
         response = requests.get(url, params=params, timeout=5)
         response.raise_for_status()
-        return response.json()
+        news_data = response.json()
+        
+        # [변경점] API 결과가 리스트인지 확인 후 최대 100개(limit)까지만 슬라이싱하여 반환합니다.
+        if isinstance(news_data, list):
+            return news_data[:limit]
+        return []
     except Exception as e:
         logger.error(f"Failed to fetch news for {symbol}: {e}")
         return []
@@ -79,21 +84,21 @@ def lambda_handler(event, context):
     sqs_buffer = []
 
     for symbol in tickers:
+        # fetch_company_news 함수 내부에서 이미 최대 100개로 잘려서 반환됩니다.
         news_list = fetch_company_news(symbol)
         
         if not news_list:
             continue
 
         for news_item in news_list:
-            # [변경점] 헤드라인만 추출
+            # 헤드라인만 추출
             headline = news_item.get('headline')
             
             # 헤드라인이 비어있으면 스킵
             if not headline:
                 continue
 
-            # [변경점] 전송할 데이터 페이로드 최소화
-            # 수신 측에서 '어떤 기업'의 뉴스인지 알아야 하므로 symbol은 포함하는 것이 좋습니다.
+            # 전송할 데이터 페이로드 최소화
             payload = {
                 'headline': headline,
                 'symbol': symbol,                 # 예측 대상 기업
@@ -116,6 +121,7 @@ def lambda_handler(event, context):
                 send_sqs_batch(sqs_buffer)
                 sqs_buffer = []
 
+    # 남은 잔여 버퍼 전송
     if sqs_buffer:
         send_sqs_batch(sqs_buffer)
 

@@ -41,7 +41,7 @@ def get_tickers_from_parameter_store():
                 item[0], 
                 item[1], 
                 item[2], 
-                item[3] if len(item) > 3 else None  # short_company_name_kr 추가
+                item[4] if len(item) > 4 else None  # short_company_name_kr 추가
             ) for item in all_tickers
         ]
         

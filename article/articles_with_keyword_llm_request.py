@@ -15,11 +15,10 @@ MAX_KEYWORDS = int(os.environ.get('MAX_KEYWORDS', '10'))
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 sqs_client = boto3.client('sqs')
-ssm_client = boto3.client('ssm')  # Parameter Store 조회를 위한 클라이언트 추가
+ssm_client = boto3.client('ssm')
 
 
 def get_tickers_from_parameter_store():
-    """Parameter Store에서 저장된 티커 목록을 가져옵니다."""
     logger.info("Fetching tickers from Parameter Store.")
     try:
         param = ssm_client.get_parameter(Name='/articker/tickers')
@@ -29,7 +28,6 @@ def get_tickers_from_parameter_store():
         ticker_map = {}
         ticker_desc_list = []
 
-        # ticker 구조: [ID, CODE, NAME] 가정
         for item in all_tickers:
             t_id = item[0]
             t_code = item[1]
@@ -52,7 +50,7 @@ def call_gemini_for_keywords(articles, ticker_context_str):
     for art in articles:
         articles_text += f"[articleId: {art.get('id')}]\nTitle: {art.get('title', 'N/A')}\nDescription: {art.get('description', 'N/A')}\n\n"
 
-    # 1. 응답 스키마 정의: ticker_code 필드 추가 (null 허용)
+    # 스키마는 기존 유지 (LLM은 ID 리스트만 반환하도록 하여 오류/토큰 절감)
     response_schema = types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -76,7 +74,6 @@ def call_gemini_for_keywords(articles, ticker_context_str):
         required=["results"]
     )
 
-    # 2. 프롬프트 보강: [Target Tickers] 컨텍스트 및 매핑 Instructions 주입
     prompt = f"""
         금일의 뉴스들을 목록으로 제공합니다. 각 뉴스들은 articleId라는 식별자를 가집니다.
         뉴스들로부터 전체 흐름을 관통하는 핵심 키워드를 최대 {MAX_KEYWORDS}개 추출하고, 해당 키워드와 연관된 뉴스들의 식별자(articleId)를 연결시켜주세요.
@@ -120,7 +117,6 @@ def call_gemini_for_keywords(articles, ticker_context_str):
 def lambda_handler(event, context):
     logger.info("Lambda 2: Processing SQS trigger for LLM Request & Ticker Mapping...")
     
-    # Parameter Store에서 종목 데이터셋 로드 (ticker_map: { 'CODE': 'ID' })
     ticker_map, ticker_context_str = get_tickers_from_parameter_store()
     
     for record in event.get('Records', []):
@@ -130,22 +126,31 @@ def lambda_handler(event, context):
             
             if not articles:
                 continue
+            
+            # ⭐️ 원본 뉴스 데이터에서 articleId를 Key, title을 Value로 가지는 매핑 딕셔너리 생성
+            article_title_map = {str(art.get('id')): art.get('title', '제목 없음') for art in articles}
                 
-            # LLM 결과 추출
             keyword_results = call_gemini_for_keywords(articles, ticker_context_str)
             
             entries_to_send = []
             for item in keyword_results:
-                # LLM이 전달한 ticker_code를 기반으로 Parameter Store 맵에서 고유 ID 추출
                 llm_ticker_code = item.get('ticker_code')
                 ticker_id = ticker_map.get(llm_ticker_code) if llm_ticker_code else None
                 
-                # 저장 단(Lambda 3)으로 보낼 최종 데이터 포맷 조립
+                # ⭐️ LLM이 추출한 ID 목록을 순회하며 JSON 구조의 리스트로 조립
+                llm_extracted_ids = item.get('articles', [])
+                json_articles_list = [
+                    {
+                        "articleId": a_id,
+                        "title": article_title_map.get(str(a_id), "제목 없음")
+                    } for a_id in llm_extracted_ids
+                ]
+                
                 save_payload = {
                     "keyword": item.get('keyword'),
-                    "articles": item.get('articles'),
+                    "articles": json_articles_list, # 리스트 형태의 JSON 오브젝트 전달
                     "sentiment": item.get('sentiment', 0),
-                    "tickerId": ticker_id  # 매핑 성공 시 UUID string, 실패 시 None(null)
+                    "tickerId": ticker_id
                 }
                 
                 entries_to_send.append({
@@ -153,7 +158,6 @@ def lambda_handler(event, context):
                     'MessageBody': json.dumps(save_payload)
                 })
                 
-            # 다음 람다(Save) 처리를 위해 SQS 배치 메시지 전송 (최대 10개씩 분할 전송)
             for i in range(0, len(entries_to_send), 10):
                 batch = entries_to_send[i:i+10]
                 sqs_client.send_message_batch(QueueUrl=SAVE_QUEUE_URL, Entries=batch)

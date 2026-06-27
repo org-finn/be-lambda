@@ -66,7 +66,7 @@ def lambda_handler(event, context):
         
         # 1. DB에서 최근 24시간 이내의 기사 조회 (최대 50개)
         query = """
-            SELECT id, title, description
+            SELECT id, COALESCE(title_kr, title), description
             FROM article
             WHERE published_date >= NOW() - INTERVAL '1 day'
             ORDER BY published_date DESC

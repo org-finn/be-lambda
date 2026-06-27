@@ -21,9 +21,24 @@ SQS_BATCH_SIZE = 10
 def get_tickers_from_parameter_store():
     """Parameter Store에서 티커 목록 조회"""
     try:
-        logger.info("Fetching tickers from Parameter Store...")
-        param = ssm_client.get_parameter(Name='/articker/tickers')
-        cached_data = json.loads(param['Parameter']['Value'])
+        response = ssm_client.get_parameters(
+            Names=['/articker/tickers', '/articker/tickers/2']
+        )
+        
+        all_tickers = []
+        
+        # 성공적으로 조회된 파라미터들을 순회하며 하나의 리스트로 병합합니다.
+        for param in response.get('Parameters', []):
+            try:
+                cached_data = json.loads(param['Value'])
+                all_tickers.extend(cached_data.get('tickers', []))
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse JSON for parameter: {param.get('Name')}")
+                
+        # 만약 생성되지 않았거나 오타가 있는 파라미터가 있다면 경고 로그를 남깁니다.
+        invalid_params = response.get('InvalidParameters', [])
+        if invalid_params:
+            logger.warning(f"Invalid or missing parameters: {invalid_params}")
         all_tickers = cached_data.get('tickers', [])
         ticker_codes = [item[1] for item in all_tickers if item]
         return ticker_codes
